@@ -11,18 +11,45 @@ import (
 	"github.com/nex-crm/wuphf/internal/company"
 )
 
+// ── Splash phases ───────────────────────────────────────────────
+//
+// The splash is a scripted sequence inspired by The Office intro:
+//
+//   Phase 0: Cast entrance — characters appear one by one
+//   Phase 1: Full cast visible, brief beat
+//   Phase 2: PM rushes in late from the right
+//   Phase 3: CRASH — PM bumps CEO, coffee spills, bell rings
+//   Phase 4: CEO grumpy face, coffee stain visible
+//   Phase 5: CEO forces a fake smile for the "camera"
+//   Phase 6: WUPHF title card
+//   Phase 7: Transition to channel view
+
+const (
+	splashEntrance  = 0
+	splashFullCast  = 1
+	splashRushIn    = 2
+	splashCrash     = 3
+	splashGrumpy    = 4
+	splashFakeSmile = 5
+	splashTitle     = 6
+	splashDone      = 7
+)
+
 type splashTickMsg time.Time
 type splashDoneMsg struct{}
 
 type splashModel struct {
-	members []company.MemberSpec
-	width   int
-	height  int
-	frame   int
-	phase   int
-	shown   int
-	bells   int
-	startAt time.Time
+	members   []company.MemberSpec
+	width     int
+	height    int
+	frame     int
+	phase     int
+	shown     int
+	bells     int
+	rushX     int  // PM's X offset during rush-in (starts off-screen)
+	startAt   time.Time
+	phaseAt   time.Time // when current phase started
+	crashBell bool
 }
 
 func newSplashModel() splashModel {
@@ -31,14 +58,17 @@ func newSplashModel() splashModel {
 	if err == nil && len(loaded.Members) > 0 {
 		manifest = loaded
 	}
+	now := time.Now()
 	return splashModel{
 		members: manifest.Members,
-		startAt: time.Now(),
+		startAt: now,
+		phaseAt: now,
+		rushX:   40, // start off-screen right
 	}
 }
 
 func splashTick() tea.Cmd {
-	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg { return splashTickMsg(t) })
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return splashTickMsg(t) })
 }
 
 func (m splashModel) Init() tea.Cmd { return splashTick() }
@@ -54,32 +84,89 @@ func (m splashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case splashTickMsg:
 		m.frame++
 		elapsed := time.Since(m.startAt)
-		switch {
-		case elapsed < 200*time.Millisecond:
-			m.phase = 0
-			m.shown = 0
-		case elapsed < time.Duration(len(m.members))*350*time.Millisecond+200*time.Millisecond:
-			m.phase = 0
-			m.shown = int((elapsed - 200*time.Millisecond) / (350 * time.Millisecond))
-			if m.shown > len(m.members) {
+		phaseElapsed := time.Since(m.phaseAt)
+
+		entranceDuration := time.Duration(len(m.members))*300*time.Millisecond + 200*time.Millisecond
+
+		switch m.phase {
+		case splashEntrance:
+			if elapsed < 200*time.Millisecond {
+				m.shown = 0
+			} else if elapsed < entranceDuration {
+				m.shown = int((elapsed - 200*time.Millisecond) / (300 * time.Millisecond))
+				if m.shown > len(m.members) {
+					m.shown = len(m.members)
+				}
+				if m.shown > m.bells && m.shown <= len(m.members) {
+					m.bells = m.shown
+					return m, tea.Batch(splashTick(), func() tea.Msg {
+						fmt.Print("\a")
+						return nil
+					})
+				}
+			} else {
 				m.shown = len(m.members)
+				m.phase = splashFullCast
+				m.phaseAt = time.Now()
 			}
-			if m.shown > m.bells && m.shown <= len(m.members) {
-				m.bells = m.shown
-				return m, tea.Batch(splashTick(), func() tea.Msg {
-					fmt.Print("\a")
-					return nil
-				})
+
+		case splashFullCast:
+			if phaseElapsed > 600*time.Millisecond {
+				m.phase = splashRushIn
+				m.phaseAt = time.Now()
 			}
-		case elapsed < time.Duration(len(m.members))*350*time.Millisecond+1200*time.Millisecond:
-			m.phase = 1
-		case elapsed < time.Duration(len(m.members))*350*time.Millisecond+2500*time.Millisecond:
-			m.phase = 2
-		default:
-			m.phase = 3
+
+		case splashRushIn:
+			// PM slides in from the right toward CEO
+			m.rushX -= 6 // fast slide
+			if m.rushX <= 0 {
+				m.rushX = 0
+				m.phase = splashCrash
+				m.phaseAt = time.Now()
+				// Double bell on crash!
+				if !m.crashBell {
+					m.crashBell = true
+					return m, tea.Batch(splashTick(), func() tea.Msg {
+						fmt.Print("\a\a")
+						return nil
+					})
+				}
+			}
+
+		case splashCrash:
+			if phaseElapsed > 500*time.Millisecond {
+				m.phase = splashGrumpy
+				m.phaseAt = time.Now()
+			}
+
+		case splashGrumpy:
+			if phaseElapsed > 800*time.Millisecond {
+				m.phase = splashFakeSmile
+				m.phaseAt = time.Now()
+			}
+
+		case splashFakeSmile:
+			if phaseElapsed > 1200*time.Millisecond {
+				m.phase = splashTitle
+				m.phaseAt = time.Now()
+			}
+
+		case splashTitle:
+			if phaseElapsed > 1500*time.Millisecond {
+				m.phase = splashDone
+				return m, func() tea.Msg { return splashDoneMsg{} }
+			}
+			// Bell chord on title
+			if m.frame%12 == 0 {
+				fmt.Print("\a")
+			}
+
+		case splashDone:
 			return m, func() tea.Msg { return splashDoneMsg{} }
 		}
+
 		return m, splashTick()
+
 	case splashDoneMsg:
 		return m, tea.Quit
 	}
@@ -90,23 +177,24 @@ func (m splashModel) View() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
+	bg := lipgloss.Color("#0D0D12")
 	fullStyle := lipgloss.NewStyle().
-		Width(m.width).
-		Height(m.height).
-		Background(lipgloss.Color("#0D0D12")).
-		Foreground(lipgloss.Color("#E8E8EA"))
-	if m.phase == 3 {
+		Width(m.width).Height(m.height).
+		Background(bg).Foreground(lipgloss.Color("#E8E8EA"))
+
+	if m.phase == splashDone {
 		return fullStyle.Render("")
 	}
-	content := ""
+
 	switch m.phase {
-	case 0, 1:
-		content = m.renderCast()
-	case 2:
-		content = m.renderTitle()
+	case splashTitle:
+		return fullStyle.Render(m.renderTitle())
+	default:
+		return fullStyle.Render(m.renderCast())
 	}
-	return fullStyle.Render(content)
 }
+
+// ── Cast rendering with collision gag ───────────────────────────
 
 func (m splashModel) renderCast() string {
 	if len(m.members) == 0 {
@@ -126,17 +214,30 @@ func (m splashModel) renderCast() string {
 	type avatarBlock struct {
 		lines []string
 		name  string
+		slug  string
+	}
+
+	// Determine which CEO sprite variant to use
+	ceoVariant := "normal"
+	switch m.phase {
+	case splashCrash:
+		ceoVariant = "spill"
+	case splashGrumpy:
+		ceoVariant = "grumpy"
+	case splashFakeSmile:
+		ceoVariant = "fakesmile"
 	}
 
 	blocks := make([]avatarBlock, 0, count)
 	maxAvatarH := 0
 	for i := 0; i < count; i++ {
 		member := m.members[i]
-		seed := member.Name
-		if seed == "" {
-			seed = member.Slug
+		var lines []string
+		if member.Slug == "ceo" && ceoVariant != "normal" {
+			lines = renderCEOVariant(ceoVariant, m.frame)
+		} else {
+			lines = renderWuphfSplashAvatar(member.Name, member.Slug, m.frame)
 		}
-		lines := renderWuphfSplashAvatar(seed, member.Slug, m.frame)
 		if len(lines) > maxAvatarH {
 			maxAvatarH = len(lines)
 		}
@@ -144,7 +245,7 @@ func (m splashModel) renderCast() string {
 		if name == "" {
 			name = member.Slug
 		}
-		blocks = append(blocks, avatarBlock{lines: lines, name: name})
+		blocks = append(blocks, avatarBlock{lines: lines, name: name, slug: member.Slug})
 	}
 
 	totalW := count*(slotW+spacing) - spacing
@@ -154,7 +255,7 @@ func (m splashModel) renderCast() string {
 	}
 
 	var lines []string
-	topPad := (m.height - maxAvatarH - 4) / 2
+	topPad := (m.height - maxAvatarH - 6) / 2
 	if topPad < 0 {
 		topPad = 0
 	}
@@ -162,6 +263,7 @@ func (m splashModel) renderCast() string {
 		lines = append(lines, "")
 	}
 
+	// Render sprite rows
 	for row := 0; row < maxAvatarH; row++ {
 		var parts []string
 		for _, block := range blocks {
@@ -169,8 +271,9 @@ func (m splashModel) renderCast() string {
 			rendered := strings.Repeat(" ", slotW)
 			if row >= offset {
 				line := block.lines[row-offset]
-				if ansi.StringWidth(line) < slotW {
-					line += strings.Repeat(" ", slotW-ansi.StringWidth(line))
+				w := ansi.StringWidth(line)
+				if w < slotW {
+					line += strings.Repeat(" ", slotW-w)
 				}
 				rendered = line
 			}
@@ -179,9 +282,25 @@ func (m splashModel) renderCast() string {
 		lines = append(lines, strings.Repeat(" ", leftPad)+strings.Join(parts, strings.Repeat(" ", spacing)))
 	}
 
+	// Coffee spill particles floating above during crash
+	if m.phase == splashCrash || m.phase == splashGrumpy {
+		spillStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8B4513"))
+		// Add coffee particles above the cast
+		if topPad > 2 {
+			particleLine := strings.Repeat(" ", leftPad+2)
+			if m.phase == splashCrash {
+				particleLine += spillStyle.Render("  ~~ \u2615 ~~  ")
+			} else {
+				particleLine += spillStyle.Render("    \u2022 \u2022    ")
+			}
+			lines[topPad-2] = particleLine
+		}
+	}
+
+	// Name labels
 	lines = append(lines, "")
 	var nameParts []string
-	for i, block := range blocks {
+	for _, block := range blocks {
 		name := truncateLabel(block.name, slotW)
 		padL := (slotW - len([]rune(name))) / 2
 		padR := slotW - len([]rune(name)) - padL
@@ -192,31 +311,158 @@ func (m splashModel) renderCast() string {
 			padR = 0
 		}
 		label := strings.Repeat(" ", padL) + name + strings.Repeat(" ", padR)
-		agentColor := sidebarAgentColors[m.members[i].Slug]
+		agentColor := sidebarAgentColors[block.slug]
 		if agentColor == "" {
 			agentColor = "#64748B"
 		}
 		nameParts = append(nameParts, lipgloss.NewStyle().Foreground(lipgloss.Color(agentColor)).Bold(true).Render(label))
 	}
 	lines = append(lines, strings.Repeat(" ", leftPad)+strings.Join(nameParts, strings.Repeat(" ", spacing)))
+
+	// Subtitle based on phase
+	subtitle := ""
+	subtitleColor := "#7A7A7E"
+	switch m.phase {
+	case splashRushIn:
+		subtitle = "                                        *running footsteps*"
+	case splashCrash:
+		subtitle = "                                     !! CRASH !!"
+		subtitleColor = "#EF4444"
+	case splashGrumpy:
+		subtitle = "                                   CEO: ...seriously?"
+		subtitleColor = "#EAB308"
+	case splashFakeSmile:
+		subtitle = "                                   CEO: :)  (this is fine)"
+		subtitleColor = "#EAB308"
+	}
+	if subtitle != "" {
+		lines = append(lines, "")
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(subtitleColor)).Italic(true).Render(subtitle))
+	}
+
 	return strings.Join(lines, "\n")
 }
 
+// ── CEO sprite variants for the collision gag ───────────────────
+
+func renderCEOVariant(variant string, frame int) []string {
+	var sprite pixelSprite
+	switch variant {
+	case "spill":
+		sprite = spriteCEOSpill()
+	case "grumpy":
+		sprite = spriteCEOGrumpy()
+	case "fakesmile":
+		if frame%2 == 0 {
+			sprite = spriteCEOFakeSmile()
+		} else {
+			// Alternate: smile twitches back to grumpy briefly
+			sprite = spriteCEOFakeSmileTwitch()
+		}
+	default:
+		sprite = spriteCEO
+	}
+	return renderSpriteToANSI(sprite, spritePaletteForSlug("ceo"))
+}
+
+// CEO shocked — coffee cup flying off to the side, mouth wide open, eyes wide
+func spriteCEOSpill() pixelSprite {
+	return pixelSprite{
+		{0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 5, 0},
+		{0, 0, 0, 1, 4, 4, 4, 4, 4, 4, 1, 0, 5, 5},
+		{0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0},
+		{0, 0, 0, 1, 1, 1, 2, 2, 1, 1, 1, 0, 0, 0},
+		{0, 0, 0, 1, 2, 2, 1, 1, 2, 2, 1, 0, 0, 0}, // mouth open (shocked)
+		{0, 0, 0, 0, 1, 2, 2, 2, 2, 1, 0, 0, 0, 0},
+		{0, 0, 1, 3, 3, 3, 3, 3, 3, 3, 3, 1, 0, 0},
+		{0, 1, 2, 3, 3, 3, 3, 3, 3, 3, 3, 2, 1, 0},
+		{0, 0, 2, 2, 3, 5, 3, 3, 3, 3, 2, 2, 0, 0}, // coffee stain on shirt
+		{0, 0, 1, 2, 1, 5, 5, 3, 3, 1, 2, 1, 0, 0},
+		{0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0},
+		{0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+		{0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0},
+		{0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0},
+	}
+}
+
+// CEO grumpy — angry eyebrows, tight frown, coffee stain still visible
+func spriteCEOGrumpy() pixelSprite {
+	return pixelSprite{
+		{0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0},
+		{0, 0, 0, 1, 4, 4, 4, 4, 4, 4, 1, 0, 0, 0},
+		{0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0},
+		{0, 0, 0, 1, 1, 1, 2, 2, 1, 1, 1, 0, 0, 0}, // sunglasses
+		{0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0},
+		{0, 0, 0, 0, 1, 2, 1, 1, 2, 1, 0, 0, 0, 0}, // tight frown
+		{0, 0, 1, 3, 3, 3, 3, 3, 3, 3, 3, 1, 0, 0},
+		{0, 1, 2, 3, 3, 3, 3, 3, 3, 3, 3, 2, 1, 0},
+		{0, 0, 2, 2, 3, 5, 3, 3, 3, 3, 2, 2, 0, 0}, // stain
+		{0, 0, 1, 2, 1, 5, 5, 3, 3, 1, 2, 1, 0, 0}, // stain
+		{0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0},
+		{0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+		{0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0},
+		{0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0},
+	}
+}
+
+// CEO fake smile — forced wide grin, eyebrows up, stain still there
+func spriteCEOFakeSmile() pixelSprite {
+	return pixelSprite{
+		{0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0},
+		{0, 0, 0, 1, 4, 4, 4, 4, 4, 4, 1, 0, 0, 0},
+		{0, 0, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 0, 0}, // eyebrows up
+		{0, 0, 0, 1, 1, 1, 2, 2, 1, 1, 1, 0, 0, 0}, // sunglasses
+		{0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0},
+		{0, 0, 0, 0, 1, 6, 6, 6, 6, 1, 0, 0, 0, 0}, // wide forced grin (white teeth)
+		{0, 0, 1, 3, 3, 3, 3, 3, 3, 3, 3, 1, 0, 0},
+		{0, 1, 2, 3, 3, 3, 3, 3, 3, 3, 3, 2, 1, 0},
+		{0, 0, 2, 2, 3, 5, 3, 3, 3, 3, 2, 2, 0, 0}, // stain still there
+		{0, 0, 1, 2, 1, 5, 5, 3, 3, 1, 2, 1, 0, 0},
+		{0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0},
+		{0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+		{0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0},
+		{0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0},
+	}
+}
+
+// CEO fake smile twitching — smile flickers, one eyebrow drops
+func spriteCEOFakeSmileTwitch() pixelSprite {
+	return pixelSprite{
+		{0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0},
+		{0, 0, 0, 1, 4, 4, 4, 4, 4, 4, 1, 0, 0, 0},
+		{0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 1, 1, 0, 0}, // one eyebrow up, one down
+		{0, 0, 0, 1, 1, 1, 2, 2, 1, 1, 1, 0, 0, 0},
+		{0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0},
+		{0, 0, 0, 0, 1, 6, 6, 6, 2, 1, 0, 0, 0, 0}, // smile twitching (half grin)
+		{0, 0, 1, 3, 3, 3, 3, 3, 3, 3, 3, 1, 0, 0},
+		{0, 1, 2, 3, 3, 3, 3, 3, 3, 3, 3, 2, 1, 0},
+		{0, 0, 2, 2, 3, 5, 3, 3, 3, 3, 2, 2, 0, 0},
+		{0, 0, 1, 2, 1, 5, 5, 3, 3, 1, 2, 1, 0, 0},
+		{0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0},
+		{0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0},
+		{0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0},
+		{0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0},
+	}
+}
+
+// ── Title card ──────────────────────────────────────────────────
+
 func (m splashModel) renderTitle() string {
 	title := []string{
-		"██╗    ██╗██╗   ██╗██████╗ ██╗  ██╗███████╗",
-		"██║    ██║██║   ██║██╔══██╗██║  ██║██╔════╝",
-		"██║ █╗ ██║██║   ██║██████╔╝███████║█████╗  ",
-		"██║███╗██║██║   ██║██╔═══╝ ██╔══██║██╔══╝  ",
-		"╚███╔███╔╝╚██████╔╝██║     ██║  ██║██║     ",
-		" ╚══╝╚══╝  ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═╝     ",
+		"\u2588\u2588\u2557    \u2588\u2588\u2557\u2588\u2588\u2557   \u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2557  \u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557",
+		"\u2588\u2588\u2551    \u2588\u2588\u2551\u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2551  \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d",
+		"\u2588\u2588\u2551 \u2588\u2557 \u2588\u2588\u2551\u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2557  ",
+		"\u2588\u2588\u2551\u2588\u2588\u2588\u2557\u2588\u2588\u2551\u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2550\u255d \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u255d  ",
+		"\u255a\u2588\u2588\u2588\u2554\u2588\u2588\u2588\u2554\u255d\u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2551     \u2588\u2588\u2551  \u2588\u2588\u2551\u2588\u2588\u2551     ",
+		" \u255a\u2550\u2550\u255d\u255a\u2550\u2550\u255d  \u255a\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u255d     \u255a\u2550\u255d  \u255a\u2550\u255d\u255a\u2550\u255d     ",
 	}
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EAB308")).Bold(true)
 	subtitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#7A7A7E")).Italic(true)
 	titleW := 0
 	for _, l := range title {
-		if len(l) > titleW {
-			titleW = len(l)
+		w := len([]rune(l))
+		if w > titleW {
+			titleW = w
 		}
 	}
 	var lines []string
@@ -241,8 +487,5 @@ func (m splashModel) renderTitle() string {
 	}
 	lines = append(lines, "")
 	lines = append(lines, strings.Repeat(" ", pad)+subtitleStyle.Render(subtitle))
-	if m.frame%8 == 0 {
-		fmt.Print("\a")
-	}
 	return strings.Join(lines, "\n")
 }
