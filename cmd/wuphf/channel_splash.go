@@ -217,6 +217,10 @@ func (m splashModel) renderCast() string {
 		slug  string
 	}
 
+	// PM is excluded from the static cast until crash — they rush in separately
+	pmIsRushing := m.phase == splashRushIn
+	pmHasCrashed := m.phase >= splashCrash
+
 	// Determine which CEO sprite variant to use
 	ceoVariant := "normal"
 	switch m.phase {
@@ -228,10 +232,27 @@ func (m splashModel) renderCast() string {
 		ceoVariant = "fakesmile"
 	}
 
+	// Build the static cast blocks, excluding PM before crash
+	var pmBlock *avatarBlock
 	blocks := make([]avatarBlock, 0, count)
 	maxAvatarH := 0
 	for i := 0; i < count; i++ {
 		member := m.members[i]
+
+		// Before crash, pull PM out of the static row
+		if member.Slug == "pm" && !pmHasCrashed {
+			pmLines := renderWuphfSplashAvatar(member.Name, member.Slug, m.frame)
+			if len(pmLines) > maxAvatarH {
+				maxAvatarH = len(pmLines)
+			}
+			name := member.Name
+			if name == "" {
+				name = member.Slug
+			}
+			pmBlock = &avatarBlock{lines: pmLines, name: name, slug: member.Slug}
+			continue
+		}
+
 		var lines []string
 		if member.Slug == "ceo" && ceoVariant != "normal" {
 			lines = renderCEOVariant(ceoVariant, m.frame)
@@ -248,7 +269,9 @@ func (m splashModel) renderCast() string {
 		blocks = append(blocks, avatarBlock{lines: lines, name: name, slug: member.Slug})
 	}
 
-	totalW := count*(slotW+spacing) - spacing
+	// After crash, PM is back in the static row next to CEO
+	castCount := len(blocks)
+	totalW := castCount*(slotW+spacing) - spacing
 	leftPad := (m.width - totalW) / 2
 	if leftPad < 0 {
 		leftPad = 0
@@ -263,7 +286,7 @@ func (m splashModel) renderCast() string {
 		lines = append(lines, "")
 	}
 
-	// Render sprite rows
+	// Render static cast sprite rows
 	for row := 0; row < maxAvatarH; row++ {
 		var parts []string
 		for _, block := range blocks {
@@ -279,13 +302,35 @@ func (m splashModel) renderCast() string {
 			}
 			parts = append(parts, rendered)
 		}
-		lines = append(lines, strings.Repeat(" ", leftPad)+strings.Join(parts, strings.Repeat(" ", spacing)))
+		castLine := strings.Repeat(" ", leftPad) + strings.Join(parts, strings.Repeat(" ", spacing))
+
+		// Overlay PM rushing in from the right during rush-in phase
+		if pmIsRushing && pmBlock != nil {
+			pmOffset := maxAvatarH - len(pmBlock.lines)
+			if row >= pmOffset {
+				pmLine := pmBlock.lines[row-pmOffset]
+				// PM slides from far right toward CEO (leftPad position)
+				pmX := leftPad + totalW + spacing + m.rushX
+				if pmX+slotW > m.width {
+					pmX = m.width - slotW
+				}
+				if pmX < 0 {
+					pmX = 0
+				}
+				lineW := ansi.StringWidth(castLine)
+				if pmX > lineW {
+					castLine += strings.Repeat(" ", pmX-lineW)
+				}
+				castLine += pmLine
+			}
+		}
+
+		lines = append(lines, castLine)
 	}
 
-	// Coffee spill particles floating above during crash
+	// Coffee spill particles floating above CEO during crash
 	if m.phase == splashCrash || m.phase == splashGrumpy {
 		spillStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8B4513"))
-		// Add coffee particles above the cast
 		if topPad > 2 {
 			particleLine := strings.Repeat(" ", leftPad+2)
 			if m.phase == splashCrash {
@@ -317,27 +362,59 @@ func (m splashModel) renderCast() string {
 		}
 		nameParts = append(nameParts, lipgloss.NewStyle().Foreground(lipgloss.Color(agentColor)).Bold(true).Render(label))
 	}
-	lines = append(lines, strings.Repeat(" ", leftPad)+strings.Join(nameParts, strings.Repeat(" ", spacing)))
+	nameLine := strings.Repeat(" ", leftPad) + strings.Join(nameParts, strings.Repeat(" ", spacing))
+
+	// Add PM name label during rush-in
+	if pmIsRushing && pmBlock != nil {
+		pmName := truncateLabel(pmBlock.name, slotW)
+		pmPadL := (slotW - len([]rune(pmName))) / 2
+		if pmPadL < 0 {
+			pmPadL = 0
+		}
+		pmLabel := strings.Repeat(" ", pmPadL) + pmName
+		pmColor := sidebarAgentColors[pmBlock.slug]
+		if pmColor == "" {
+			pmColor = "#64748B"
+		}
+		pmX := leftPad + totalW + spacing + m.rushX
+		if pmX+slotW > m.width {
+			pmX = m.width - slotW
+		}
+		if pmX < 0 {
+			pmX = 0
+		}
+		nameLineW := ansi.StringWidth(nameLine)
+		if pmX > nameLineW {
+			nameLine += strings.Repeat(" ", pmX-nameLineW)
+		}
+		nameLine += lipgloss.NewStyle().Foreground(lipgloss.Color(pmColor)).Bold(true).Render(pmLabel)
+	}
+
+	lines = append(lines, nameLine)
 
 	// Subtitle based on phase
 	subtitle := ""
 	subtitleColor := "#7A7A7E"
 	switch m.phase {
 	case splashRushIn:
-		subtitle = "                                        *running footsteps*"
+		subtitle = "*running footsteps*"
 	case splashCrash:
-		subtitle = "                                     !! CRASH !!"
+		subtitle = "!! CRASH !!"
 		subtitleColor = "#EF4444"
 	case splashGrumpy:
-		subtitle = "                                   CEO: ...seriously?"
+		subtitle = "CEO: ...seriously?"
 		subtitleColor = "#EAB308"
 	case splashFakeSmile:
-		subtitle = "                                   CEO: :)  (this is fine)"
+		subtitle = "CEO: :)  (this is fine)"
 		subtitleColor = "#EAB308"
 	}
 	if subtitle != "" {
 		lines = append(lines, "")
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(subtitleColor)).Italic(true).Render(subtitle))
+		subtitlePad := (m.width - len(subtitle)) / 2
+		if subtitlePad < 0 {
+			subtitlePad = 0
+		}
+		lines = append(lines, strings.Repeat(" ", subtitlePad)+lipgloss.NewStyle().Foreground(lipgloss.Color(subtitleColor)).Italic(true).Render(subtitle))
 	}
 
 	return strings.Join(lines, "\n")
