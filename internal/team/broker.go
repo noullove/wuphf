@@ -3612,7 +3612,7 @@ func skillSlug(name string) string {
 func (b *Broker) findSkillByNameLocked(name string) *teamSkill {
 	slug := skillSlug(name)
 	for i := range b.skills {
-		if skillSlug(b.skills[i].Name) == slug {
+		if skillSlug(b.skills[i].Name) == slug && b.skills[i].Status != "archived" {
 			return &b.skills[i]
 		}
 	}
@@ -3994,9 +3994,9 @@ func (b *Broker) parseSkillProposalLocked(msg channelMessage) {
 
 	slug := skillSlug(name)
 
-	// Check for duplicate
+	// Check for duplicate (skip archived)
 	for _, s := range b.skills {
-		if s.Name == slug {
+		if s.Name == slug && s.Status != "archived" {
 			return
 		}
 	}

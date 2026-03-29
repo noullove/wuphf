@@ -1273,3 +1273,30 @@ func TestResolveTaskIntervalsRespectMinimumFloor(t *testing.T) {
 		t.Fatalf("expected recheck interval floor of 2, got %d", got)
 	}
 }
+
+func TestParseSkillProposalFromMessage(t *testing.T) {
+	b := &Broker{}
+	msg := channelMessage{
+		ID:      "msg-1",
+		From:    "ceo",
+		Channel: "general",
+		Content: "I noticed a pattern.\n\n[SKILL PROPOSAL]\nName: deploy-verify\nTitle: Deploy Verification\nDescription: Post-deploy checks\nTrigger: after deploy\nTags: deploy, ops\n---\n1. Check health\n2. Check errors\n[/SKILL PROPOSAL]",
+	}
+	b.parseSkillProposalLocked(msg)
+	if len(b.skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(b.skills))
+	}
+	s := b.skills[0]
+	if s.Name != "deploy-verify" {
+		t.Fatalf("expected name 'deploy-verify', got %q", s.Name)
+	}
+	if s.Title != "Deploy Verification" {
+		t.Fatalf("expected title 'Deploy Verification', got %q", s.Title)
+	}
+	if s.Status != "proposed" {
+		t.Fatalf("expected status 'proposed', got %q", s.Status)
+	}
+	if s.Description != "Post-deploy checks" {
+		t.Fatalf("expected description 'Post-deploy checks', got %q", s.Description)
+	}
+}
