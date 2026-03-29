@@ -2463,6 +2463,10 @@ func (b *Broker) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	b.messages = append(b.messages, msg)
 	total := len(b.messages)
+
+	// Auto-detect skill proposals from CEO messages
+	b.parseSkillProposalLocked(msg)
+
 	if err := b.saveLocked(); err != nil {
 		b.mu.Unlock()
 		http.Error(w, "failed to persist broker state", http.StatusInternalServerError)
@@ -3932,3 +3936,104 @@ func (b *Broker) handleInvokeSkill(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"skill": *sk})
 }
+
+// parseSkillProposalLocked extracts a [SKILL PROPOSAL] block from a message
+// and creates a proposed skill. Must be called with b.mu held.
+func (b *Broker) parseSkillProposalLocked(msg channelMessage) {
+	const startTag = "[SKILL PROPOSAL]"
+	const endTag = "[/SKILL PROPOSAL]"
+
+	idx := strings.Index(msg.Content, startTag)
+	if idx < 0 {
+		return
+	}
+	endIdx := strings.Index(msg.Content, endTag)
+	if endIdx < 0 {
+		return
+	}
+
+	block := msg.Content[idx+len(startTag) : endIdx]
+	block = strings.TrimSpace(block)
+
+	// Split on "---" separator between metadata and instructions
+	parts := strings.SplitN(block, "---", 2)
+	if len(parts) < 2 {
+		return
+	}
+
+	meta := strings.TrimSpace(parts[0])
+	instructions := strings.TrimSpace(parts[1])
+
+	// Parse metadata fields
+	var name, title, description, trigger string
+	var tags []string
+	for _, line := range strings.Split(meta, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Name:") {
+			name = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
+		} else if strings.HasPrefix(line, "Title:") {
+			title = strings.TrimSpace(strings.TrimPrefix(line, "Title:"))
+		} else if strings.HasPrefix(line, "Description:") {
+			description = strings.TrimSpace(strings.TrimPrefix(line, "Description:"))
+		} else if strings.HasPrefix(line, "Trigger:") {
+			trigger = strings.TrimSpace(strings.TrimPrefix(line, "Trigger:"))
+		} else if strings.HasPrefix(line, "Tags:") {
+			raw := strings.TrimSpace(strings.TrimPrefix(line, "Tags:"))
+			for _, t := range strings.Split(raw, ",") {
+				t = strings.TrimSpace(t)
+				if t != "" {
+					tags = append(tags, t)
+				}
+			}
+		}
+	}
+
+	if name == "" || title == "" {
+		return
+	}
+
+	slug := skillSlug(name)
+
+	// Check for duplicate
+	for _, s := range b.skills {
+		if s.Name == slug {
+			return
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	channel := msg.Channel
+	if channel == "" {
+		channel = "general"
+	}
+
+	skill := teamSkill{
+		ID:          slug,
+		Name:        slug,
+		Title:       title,
+		Description: description,
+		Content:     instructions,
+		CreatedBy:   msg.From,
+		Channel:     channel,
+		Tags:        tags,
+		Trigger:     trigger,
+		UsageCount:  0,
+		Status:      "proposed",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	b.skills = append(b.skills, skill)
+
+	// Announce the proposal
+	b.counter++
+	b.messages = append(b.messages, channelMessage{
+		ID:        fmt.Sprintf("msg-%d", b.counter),
+		From:      "system",
+		Channel:   channel,
+		Kind:      "skill_proposal",
+		Title:     "Skill Proposed: " + title,
+		Content:   fmt.Sprintf("@%s proposed a new skill **%s**: %s. Use /skills to review and approve.", msg.From, title, description),
+		Timestamp: now,
+	})
+}
+
