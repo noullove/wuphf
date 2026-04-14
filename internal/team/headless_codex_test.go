@@ -324,6 +324,7 @@ func newHeadlessLauncherForTest() *Launcher {
 		headlessWorkers: make(map[string]bool),
 		headlessActive:  make(map[string]*headlessCodexActiveTurn),
 		headlessQueues:  make(map[string][]headlessCodexTurn),
+		pack:            &agent.PackDefinition{LeadSlug: "ceo"}, // deterministic lead; avoids reading global broker state
 	}
 }
 

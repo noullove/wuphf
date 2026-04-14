@@ -446,6 +446,7 @@ func TestBrokerMessagesCanScopeToAgentInbox(t *testing.T) {
 }
 
 func TestNewBrokerSeedsDefaultOfficeRosterOnFreshState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate from ~/.wuphf company.json (e.g. RevOps pack)
 	oldPathFn := brokerStatePath
 	tmpDir := t.TempDir()
 	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
