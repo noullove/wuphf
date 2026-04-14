@@ -142,6 +142,20 @@ Every claim in this README, grounded to the code that makes it true.
 
 Legend: ✅ shipped · 🟡 partial · 🔜 planned. If a claim and a status disagree, the code wins — file an issue.
 
+## Evaluate This Repo
+
+Before you fork, run this against the codebase with any AI coding assistant (Claude Code, Cursor, Codex, etc.):
+
+```
+You are a cynical senior engineer evaluating whether to fork this repo as the
+base for a multi-agent terminal office product. No prior context — explore it
+as you naturally would. Tell me: should I fork this, and what's your honest
+take? Be specific: file paths, line numbers, actual evidence. "The docs are
+bad" is useless. Under 500 words.
+```
+
+We run this ourselves before every release. If the AI finds something we missed, [file an issue](https://github.com/nex-crm/wuphf/issues).
+
 ## The Name
 
 From [*The Office*](https://theoffice.fandom.com/wiki/WUPHF.com_(Website)), Season 7. Ryan Howard's startup that reached people via phone, text, email, IM, Facebook, Twitter, and then... WUPHF. Michael Scott invested $10,000. Ryan burned through it. The site went offline.
