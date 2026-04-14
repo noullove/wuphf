@@ -95,26 +95,26 @@ export const WuphfDemo: React.FC = () => {
       {/* ─── iOS TEXT-MESSAGE DINGS on message arrivals ─── */}
       {/* Scene 4 starts at 18s */}
       <Sequence from={sec(18) + 15} durationInFrames={sec(1.5)}>
-        <Audio src={staticFile("audio/ios-ding.mp3")} volume={0.3} />
+        <Audio src={staticFile("audio/pristine.mp3")} volume={0.3} />
       </Sequence>
       <Sequence from={sec(18) + 55} durationInFrames={sec(1.5)}>
-        <Audio src={staticFile("audio/ios-ding.mp3")} volume={0.25} />
+        <Audio src={staticFile("audio/pristine.mp3")} volume={0.25} />
       </Sequence>
       <Sequence from={sec(18) + 110} durationInFrames={sec(1.5)}>
-        <Audio src={staticFile("audio/ios-ding.mp3")} volume={0.2} />
+        <Audio src={staticFile("audio/pristine.mp3")} volume={0.2} />
       </Sequence>
       <Sequence from={sec(18) + 150} durationInFrames={sec(1.5)}>
-        <Audio src={staticFile("audio/ios-ding.mp3")} volume={0.2} />
+        <Audio src={staticFile("audio/pristine.mp3")} volume={0.2} />
       </Sequence>
       {/* Scene 5 starts at 29s */}
       <Sequence from={sec(29) + 15} durationInFrames={sec(1.5)}>
-        <Audio src={staticFile("audio/ios-ding.mp3")} volume={0.25} />
+        <Audio src={staticFile("audio/pristine.mp3")} volume={0.25} />
       </Sequence>
       <Sequence from={sec(29) + 65} durationInFrames={sec(1.5)}>
-        <Audio src={staticFile("audio/ios-ding.mp3")} volume={0.25} />
+        <Audio src={staticFile("audio/pristine.mp3")} volume={0.25} />
       </Sequence>
       <Sequence from={sec(29) + 115} durationInFrames={sec(1.5)}>
-        <Audio src={staticFile("audio/ios-ding.mp3")} volume={0.2} />
+        <Audio src={staticFile("audio/pristine.mp3")} volume={0.2} />
       </Sequence>
 
       {/* Transitions */}

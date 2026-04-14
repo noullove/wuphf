@@ -461,6 +461,15 @@ func (b *Broker) syncTaskWorktreeLocked(task *teamTask) error {
 	if task == nil {
 		return nil
 	}
+	// Automatically assign local_worktree mode when a coding agent claims a task.
+	if task.ExecutionMode == "" && codingAgentSlugs[strings.TrimSpace(task.Owner)] {
+		switch strings.TrimSpace(task.Status) {
+		case "", "open", "done":
+			// not yet in-progress; leave mode unset
+		default:
+			task.ExecutionMode = "local_worktree"
+		}
+	}
 	if taskNeedsLocalWorktree(task) {
 		if strings.TrimSpace(task.WorktreePath) != "" && strings.TrimSpace(task.WorktreeBranch) != "" {
 			return nil

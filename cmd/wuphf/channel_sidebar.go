@@ -443,7 +443,7 @@ func renderSidebar(channels []channelInfo, members []channelMember, tasks []chan
 	lines = append(lines, sidebarPlainRow(workspaceStyle.Render("WUPHF"), width))
 	lines = append(lines, sidebarPlainRow(workspaceMetaStyle.Render("The WUPHF Office"), width))
 	lines = append(lines, sidebarPlainRow(workspaceSummaryStyle.Render(summaryLine), width))
-	lines = append(lines, sidebarPlainRow(workspaceMetaStyle.Render("Ctrl+G channels · Ctrl+O apps"), width))
+	lines = append(lines, sidebarPlainRow(workspaceMetaStyle.Render("Ctrl+G channels · Ctrl+O apps · d DM agent"), width))
 	lines = append(lines, sidebarPlainRow(workspaceHintStyle.Render(hintLine), width))
 	lines = append(lines, "")
 	channelHeaderText := "Channels"

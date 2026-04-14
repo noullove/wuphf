@@ -4696,6 +4696,20 @@ func (m channelModel) runCommand(trimmed, threadTarget string) (tea.Model, tea.C
 		m.confirm = confirmationForResetDM(agent, m.activeChannel)
 		m.notice = "Confirm clearing the direct transcript."
 		return m, nil
+	case trimmed == "/dm":
+		clearCurrent()
+		m.notice = "Usage: /dm <agent-slug>"
+		return m, nil
+	case strings.HasPrefix(trimmed, "/dm "):
+		clearCurrent()
+		slug := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, "/dm ")))
+		slug = strings.TrimPrefix(slug, "@")
+		if slug == "" {
+			m.notice = "Usage: /dm <agent-slug>"
+			return m, nil
+		}
+		m.notice = fmt.Sprintf("Opening DM with %s\u2026", slug)
+		return m, createDMChannel(slug)
 	case trimmed == "/integrate":
 		clearCurrent()
 		if config.ResolveNoNex() {
