@@ -80,6 +80,12 @@ Removing these strings doesn't affect command behavior — they're display copy 
 
 Rename the binary in `cmd/wuphf/` + `go.mod` + goreleaser config if you want a different command name.
 
+If you rename the module in `go.mod`, rewrite all import paths in one pass:
+
+```bash
+find . -name '*.go' | xargs sed -i 's|github.com/nex-crm/wuphf|github.com/your-org/your-fork|g'
+```
+
 ## 3. Add your own agent pack
 
 Packs live in Go (`internal/agent/packs.go`) as a static slice. Not YAML — yet. Recompile after editing.
