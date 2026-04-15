@@ -702,4 +702,38 @@
     activeThought = null;
   });
 
+  canvas.addEventListener('mousemove', e => {
+    const rect   = canvas.getBoundingClientRect();
+    const scaleX = W / rect.width;
+    const scaleY = H / rect.height;
+    const mx = (e.clientX - rect.left) * scaleX;
+    const my = (e.clientY - rect.top)  * scaleY;
+
+    let pointer = false;
+
+    // Drawer
+    if (drawerHit) {
+      const { drawerX: dx, drawerY: dy } = drawerHit;
+      if (mx >= dx - 4 && mx <= dx + 74 && my >= dy - 26 && my <= dy + 14) pointer = true;
+    }
+
+    // Characters
+    if (!pointer) {
+      for (const hit of charHits) {
+        if (mx >= hit.cx && mx <= hit.cx + hit.w &&
+            my >= hit.cy && my <= hit.cy + hit.h) { pointer = true; break; }
+      }
+    }
+
+    // Interactables
+    if (!pointer) {
+      for (const hit of interactHits) {
+        if (mx >= hit.x && mx <= hit.x + hit.w &&
+            my >= hit.y && my <= hit.y + hit.h) { pointer = true; break; }
+      }
+    }
+
+    canvas.style.cursor = pointer ? 'pointer' : 'default';
+  });
+
 })();
