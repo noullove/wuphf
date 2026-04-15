@@ -695,8 +695,17 @@
     }
   }
 
-  function loop() { draw(); requestAnimationFrame(loop); }
-  loop();
+  let rafId;
+  function loop() {
+    draw();
+    rafId = requestAnimationFrame(loop);
+  }
+  rafId = requestAnimationFrame(loop);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) cancelAnimationFrame(rafId);
+    else rafId = requestAnimationFrame(loop);
+  });
 
   canvas.addEventListener('click', e => {
     const rect = canvas.getBoundingClientRect();
@@ -783,6 +792,14 @@
     }
 
     canvas.style.cursor = pointer ? 'pointer' : 'default';
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      activeThought = null;
+      activeReveal  = null;
+      drawerOpen    = false;
+    }
   });
 
 })();
