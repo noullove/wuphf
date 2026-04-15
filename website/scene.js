@@ -62,6 +62,7 @@
   let flashOn   = true;
   let animF     = 0;
   let drawerHit = null;
+  let drawerOpen = false;
 
   setInterval(() => { flashOn = !flashOn; }, 500);
   setInterval(() => { animF = (animF + 1) % 4; }, 280);
@@ -491,6 +492,38 @@
     drawDesk(2, 4, 1, false);             // Engineer Agent desk
     drawDesk(4, 3, 1, false);             // CMO Agent desk
 
+    // "Click Me!" tooltip above the reception desk flashing drawer
+    if (!drawerOpen && flashOn && drawerHit) {
+      const { drawerX: dx, drawerY: dy } = drawerHit;
+      ctx.fillStyle = C.yellow;
+      ctx.fillRect(dx - 4, dy - 22, 72, 18);
+      // Down-pointing triangle
+      ctx.beginPath();
+      ctx.moveTo(dx + 8,  dy - 4);
+      ctx.lineTo(dx + 16, dy - 4);
+      ctx.lineTo(dx + 12, dy);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = C.bg;
+      ctx.font = '6px "Press Start 2P"'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText('Click Me!', dx, dy - 13);
+    }
+
+    // Drawer reveal
+    if (drawerOpen && drawerHit) {
+      const { drawerX: dx, drawerY: dy } = drawerHit;
+      const rx = dx - 8, ry = dy + 14;
+      ctx.fillStyle = C.surface;
+      ctx.fillRect(rx, ry, 190, 44);
+      ctx.strokeStyle = C.yellow; ctx.lineWidth = 2;
+      ctx.strokeRect(rx, ry, 190, 44);
+      ctx.fillStyle = C.text;
+      ctx.font = '7px "Press Start 2P"'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText('One command.', rx + 8, ry + 6);
+      ctx.fillText('One office.', rx + 8, ry + 18);
+      ctx.fillStyle = C.yellow;
+      ctx.fillText('./wuphf', rx + 8, ry + 30);
+    }
+
     // Characters (back-to-front sort by gx+gy)
     charHits.length = 0;
     const sorted = [...CHARS].sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy));
@@ -540,6 +573,16 @@
     const scaleY = H / rect.height;
     const mx = (e.clientX - rect.left) * scaleX;
     const my = (e.clientY - rect.top)  * scaleY;
+
+    // Check reception drawer click
+    if (drawerHit) {
+      const { drawerX: dx, drawerY: dy } = drawerHit;
+      if (mx >= dx - 4 && mx <= dx + 74 &&
+          my >= dy - 26 && my <= dy + 14) {
+        drawerOpen = !drawerOpen;
+        return;
+      }
+    }
 
     // Check characters
     for (const hit of charHits) {
