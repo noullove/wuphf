@@ -359,6 +359,37 @@
     ctx.fillStyle = '#100808'; ctx.fillRect(x + 2, y + 46, 7, 4); ctx.fillRect(x + 11, y + 46, 7, 4);
   }
 
+  function drawAgent(x, y, color, label, f) {
+    const b = f < 2 ? 0 : 1;
+    // Robot head block (solid color)
+    ctx.fillStyle = color; ctx.fillRect(x + 2, y + b, 16, 14);
+    // Screen face
+    ctx.fillStyle = C.bg; ctx.fillRect(x + 4, y + 3 + b, 12, 7);
+    const eyeCol = color === C.yellow ? '#AA7800' : C.blue;
+    ctx.fillStyle = eyeCol;
+    ctx.fillRect(x + 5,  y + 4 + b, 4, 4);
+    ctx.fillRect(x + 11, y + 4 + b, 4, 4);
+    // Blink on frame 3
+    if (f === 3) {
+      ctx.fillStyle = C.bg;
+      ctx.fillRect(x + 5,  y + 6 + b, 4, 2);
+      ctx.fillRect(x + 11, y + 6 + b, 4, 2);
+    }
+    // Body
+    ctx.fillStyle = color; ctx.fillRect(x, y + 14 + b, 20, 16);
+    // Nameplate badge
+    ctx.fillStyle = C.bg;    ctx.fillRect(x + 2, y + 20 + b, 16, 8);
+    ctx.fillStyle = color;
+    ctx.font = '5px "Press Start 2P"'; ctx.textAlign = 'center';
+    ctx.fillText(label.substring(0, 3).toUpperCase(), x + 10, y + 27 + b);
+    // Legs
+    ctx.fillStyle = '#202020';
+    ctx.fillRect(x + 2,  y + 30 + b, 7,  16);
+    ctx.fillRect(x + 11, y + 30 + b, 7,  16);
+    ctx.fillRect(x,      y + 46,     9,  4);
+    ctx.fillRect(x + 11, y + 46,     9,  4);
+  }
+
   // ── Characters ─────────────────────────────────────────────────
   const CHARS = [
     { id: 'pam',     name: 'Pam Beesly',    quote: 'WUPHF!',
@@ -373,6 +404,12 @@
       gx: 5.5, gy: 4,   fn: drawKevin, wide: true },
     { id: 'creed',   name: 'Creed Bratton',  quote: "Nobody steals from Creed Bratton and gets away with it. The website is fine.",
       gx: 0.5, gy: 5,   fn: drawCreed },
+    { id: 'ceo', name: 'CEO Agent',      quote: 'Routing task to engineering team. ETA: 3 minutes.',
+      gx: 5.5, gy: 2,   isAgent: true, color: C.yellow,  label: 'CEO' },
+    { id: 'eng', name: 'Engineer Agent', quote: 'Implementing feature... 47% complete.',
+      gx: 2.5, gy: 4,   isAgent: true, color: C.blue,    label: 'ENG' },
+    { id: 'cmo', name: 'CMO Agent',      quote: 'Drafting launch post. You will not believe this lede.',
+      gx: 4.2, gy: 3.2, isAgent: true, color: '#5AAA7A', label: 'CMO' },
   ];
 
   const charHits = [];
@@ -418,8 +455,24 @@
       ctx.ellipse(c.x, c.y + 2, char.wide ? 14 : 11, 5, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      // Sprite
-      char.fn(cx, cy, animF);
+      // Sprite (agent or cast)
+      if (char.isAgent) {
+        drawAgent(cx, cy, char.color, char.label, animF);
+      } else {
+        char.fn(cx, cy, animF);
+      }
+
+      // Nametag: Pam (so visitors know who she is) + all agents
+      if (char.id === 'pam' || char.isAgent) {
+        const tagColor  = char.isAgent ? char.color : C.yellow;
+        const firstName = char.name.split(' ')[0].substring(0, 8);
+        const tagW      = firstName.length * 6 + 16;
+        ctx.fillStyle   = tagColor;
+        ctx.fillRect(c.x - tagW / 2, cy - 14, tagW, 11);
+        ctx.fillStyle    = C.bg;
+        ctx.font = '5px "Press Start 2P"'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(firstName, c.x, cy - 8);
+      }
 
       charHits.push({ char, cx, cy, w: cw + 4, h: 54 });
     }
