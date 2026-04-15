@@ -41,7 +41,7 @@ func (b *Broker) onboardingCompleteFn(task string, skipTask bool) error {
 		}
 	}
 
-	lead := officeLeadSlugFrom(b.members, nil)
+	lead := officeLeadSlugFrom(b.members)
 	if lead == "" {
 		lead = "ceo"
 	}

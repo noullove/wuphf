@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nex-crm/wuphf/internal/agent"
 	"github.com/nex-crm/wuphf/internal/api"
+	"github.com/nex-crm/wuphf/internal/company"
 	"github.com/nex-crm/wuphf/internal/config"
 	"github.com/nex-crm/wuphf/internal/setup"
 	"github.com/nex-crm/wuphf/internal/tui/render"
@@ -65,11 +65,17 @@ func cmdInit(ctx *SlashContext, args string) error {
 	if cfg.LLMProvider == "" {
 		cfg.LLMProvider = "claude-code"
 	}
-	if cfg.Pack == "" {
-		cfg.Pack = "founding-team"
+	if cfg.ActiveBlueprint() == "" {
+		if manifest, err := company.LoadManifest(); err == nil {
+			if refs := manifest.BlueprintRefsByKind("operation"); len(refs) > 0 {
+				cfg.SetActiveBlueprint(refs[0].ID)
+			}
+		}
 	}
-	if pack := agent.GetPack(cfg.Pack); pack != nil {
-		cfg.TeamLeadSlug = pack.LeadSlug
+	if cfg.TeamLeadSlug == "" {
+		if manifest, err := company.LoadRuntimeManifest("."); err == nil && strings.TrimSpace(manifest.Lead) != "" {
+			cfg.TeamLeadSlug = manifest.Lead
+		}
 	}
 	if err := config.Save(cfg); err != nil {
 		return err
@@ -80,7 +86,11 @@ func cmdInit(ctx *SlashContext, args string) error {
 		return err
 	}
 	ctx.AddMessage("system", notice)
-	ctx.AddMessage("system", fmt.Sprintf("Setup defaults saved. Provider: %s | Pack: %s", cfg.LLMProvider, cfg.Pack))
+	label := cfg.ActiveBlueprint()
+	if strings.TrimSpace(label) == "" {
+		label = "none"
+	}
+	ctx.AddMessage("system", fmt.Sprintf("Setup defaults saved. Provider: %s | Blueprint template: %s", cfg.LLMProvider, label))
 	if cfg.APIKey == "" {
 		ctx.AddMessage("system", "No WUPHF API key is configured yet. Run interactive /init inside WUPHF to add one.")
 	}

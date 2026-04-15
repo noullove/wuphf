@@ -52,8 +52,10 @@ If the user explicitly says "skip" or "work from context only", proceed using Ne
 
 `
 
-// Packs is the registry of all available agent packs.
-var Packs = []PackDefinition{
+// legacyPacks retains the old hard-coded pack registry strictly as a
+// compatibility fallback for callers that have not yet moved to operation
+// blueprints.
+var legacyPacks = []PackDefinition{
 	{
 		Slug:        "starter",
 		Name:        "Starter Team",
@@ -346,12 +348,31 @@ Gate any CRM field updates (score, tier, owner assignment) on human approval via
 	},
 }
 
-// GetPack returns the pack with the given slug, or nil if not found.
-func GetPack(slug string) *PackDefinition {
-	for i := range Packs {
-		if Packs[i].Slug == slug {
-			return &Packs[i]
+// ListLegacyPacks returns a copy of the compatibility pack registry.
+func ListLegacyPacks() []PackDefinition {
+	out := make([]PackDefinition, 0, len(legacyPacks))
+	for _, pack := range legacyPacks {
+		cloned := pack
+		cloned.Agents = append([]AgentConfig(nil), pack.Agents...)
+		cloned.DefaultSkills = append([]PackSkillSpec(nil), pack.DefaultSkills...)
+		out = append(out, cloned)
+	}
+	return out
+}
+
+// LookupLegacyPack returns the compatibility pack with the given slug, or nil
+// if not found.
+func LookupLegacyPack(slug string) *PackDefinition {
+	for i := range legacyPacks {
+		if legacyPacks[i].Slug == slug {
+			pack := legacyPacks[i]
+			pack.Agents = append([]AgentConfig(nil), legacyPacks[i].Agents...)
+			pack.DefaultSkills = append([]PackSkillSpec(nil), legacyPacks[i].DefaultSkills...)
+			return &pack
 		}
 	}
 	return nil
 }
+
+// GetPack is a deprecated compatibility alias for LookupLegacyPack.
+func GetPack(slug string) *PackDefinition { return LookupLegacyPack(slug) }

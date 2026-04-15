@@ -14,11 +14,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/nex-crm/wuphf/internal/brokeraddr"
 	"github.com/nex-crm/wuphf/internal/team"
 )
 
-const defaultBrokerBaseURL = "http://127.0.0.1:7890"
-const defaultBrokerTokenFile = "/tmp/wuphf-broker-token"
+const defaultBrokerTokenFile = brokeraddr.DefaultTokenFile
 
 var reconfigureOfficeSessionFn = reconfigureLiveOffice
 
@@ -373,7 +373,12 @@ func Run(ctx context.Context) error {
 		Version: "0.1.0",
 	}, nil)
 
-	if isOneOnOneMode() {
+	configureServerTools(server, resolveSlugOptional(""), strings.TrimSpace(os.Getenv("WUPHF_CHANNEL")), isOneOnOneMode())
+	return server.Run(ctx, &mcp.StdioTransport{})
+}
+
+func configureServerTools(server *mcp.Server, slug string, channel string, oneOnOne bool) {
+	if oneOnOne {
 		mcp.AddTool(server, officeWriteTool(
 			"reply",
 			"Send your reply to the human in the direct 1:1 conversation.",
@@ -400,15 +405,12 @@ func Run(ctx context.Context) error {
 		), handleTeamRuntimeState)
 
 		registerActionTools(server)
-
-		return server.Run(ctx, &mcp.StdioTransport{})
+		return
 	}
 
 	// ─── Role-based tool registration ───
 	// Each role gets only the tools it needs. Cuts MCP schema overhead
 	// from ~125k tokens (27 tools) down to ~15k (4 tools in DM mode).
-	slug := resolveSlugOptional("")
-	channel := strings.TrimSpace(os.Getenv("WUPHF_CHANNEL"))
 	isDM := strings.HasPrefix(channel, "dm-")
 	isLead := slug == "" || slug == "ceo"
 
@@ -434,7 +436,8 @@ func Run(ctx context.Context) error {
 			"team_skill_run",
 			"Invoke a named team skill. When the human's request matches an available skill, call this BEFORE replying — do not freelance. Bumps the skill's usage, logs a skill_invocation to the channel, and returns the skill's canonical step-by-step content for you to follow.",
 		), handleTeamSkillRun)
-		return server.Run(ctx, &mcp.StdioTransport{})
+		registerActionTools(server)
+		return
 	}
 
 	// Office mode: core tools for all agents
@@ -564,6 +567,7 @@ func Run(ctx context.Context) error {
 		"team_skill_run",
 		"Invoke a named team skill. When the request matches an available skill (see the skill list in your prompt), call this BEFORE doing the work — do not freelance. Bumps the skill's usage, logs a skill_invocation in the channel so the office sees you followed the playbook, and returns the skill's canonical step-by-step content for you to execute.",
 	), handleTeamSkillRun)
+	registerActionTools(server)
 
 	// Lead-only tools: CEO gets coordination, delegation, and structural tools
 	if isLead {
@@ -615,10 +619,7 @@ func Run(ctx context.Context) error {
 			"team_member",
 			"Create or remove an office member.",
 		), handleTeamMember)
-		registerActionTools(server)
 	}
-
-	return server.Run(ctx, &mcp.StdioTransport{})
 }
 
 func handleTeamBroadcast(ctx context.Context, _ *mcp.CallToolRequest, args TeamBroadcastArgs) (*mcp.CallToolResult, any, error) {
@@ -837,11 +838,12 @@ func latestRelevantMessage(messages []brokerMessage, replyTo string) *brokerMess
 func ownsRelevantTask(slug, replyTo, domain string, tasks []brokerTaskSummary) bool {
 	slug = strings.TrimSpace(slug)
 	replyTo = strings.TrimSpace(replyTo)
+	now := time.Now()
 	for _, task := range tasks {
-		if strings.EqualFold(strings.TrimSpace(task.Status), "done") {
+		if strings.TrimSpace(task.Owner) != slug {
 			continue
 		}
-		if strings.TrimSpace(task.Owner) != slug {
+		if !taskAllowsFollowUpBroadcast(task, replyTo, domain, now) {
 			continue
 		}
 		if replyTo != "" {
@@ -856,6 +858,31 @@ func ownsRelevantTask(slug, replyTo, domain string, tasks []brokerTaskSummary) b
 		}
 	}
 	return false
+}
+
+const completedTaskBroadcastGrace = 15 * time.Minute
+
+func taskAllowsFollowUpBroadcast(task brokerTaskSummary, replyTo, domain string, now time.Time) bool {
+	status := strings.TrimSpace(task.Status)
+	if !strings.EqualFold(status, "done") {
+		return true
+	}
+	if replyTo != "" && strings.TrimSpace(task.ThreadID) == replyTo {
+		return true
+	}
+	updatedAt := strings.TrimSpace(task.UpdatedAt)
+	if updatedAt == "" {
+		return false
+	}
+	updated, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return false
+	}
+	if now.Sub(updated) > completedTaskBroadcastGrace {
+		return false
+	}
+	taskDomain := inferOfficeTextDomain(task.Title + " " + task.Details)
+	return taskDomain == domain || taskDomain == "general" || domain == ""
 }
 
 // inferOfficeAgentDomain and inferOfficeTextDomain are canonical wrappers around
@@ -1936,7 +1963,7 @@ func brokerBaseURL() string {
 		base = strings.TrimSpace(os.Getenv("NEX_TEAM_BROKER_URL"))
 	}
 	if base == "" {
-		base = defaultBrokerBaseURL
+		base = brokeraddr.ResolveBaseURL()
 	}
 	return strings.TrimRight(base, "/")
 }

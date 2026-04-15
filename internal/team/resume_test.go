@@ -8,8 +8,8 @@ import (
 	"github.com/nex-crm/wuphf/internal/agent"
 )
 
-// agent is used by TestBuildResumePacketsRouting to construct a Launcher with a pack.
-var _ = agent.Packs
+// agent is used by the routing tests to construct legacy compatibility packs.
+var _ = agent.LookupLegacyPack
 
 func TestFindUnansweredMessagesAllAnswered(t *testing.T) {
 	humanMsgs := []channelMessage{

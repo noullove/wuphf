@@ -29,7 +29,7 @@ func TestInitFlowUsesResolvedAPIKeyFromEnv(t *testing.T) {
 	}
 }
 
-func TestInitFlowSkipsToPackWhenAPIKeyExists(t *testing.T) {
+func TestInitFlowSkipsToBlueprintWhenAPIKeyExists(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if err := config.Save(config.Config{APIKey: "wuphf-key"}); err != nil {
 		t.Fatalf("save config: %v", err)
@@ -64,11 +64,22 @@ func TestInitFlowViewShowsReadinessSummary(t *testing.T) {
 	flow.provider = "claude-code"
 
 	view := flow.View()
-	if !containsAll(view, "Setup Readiness", "Nex identity", "tmux office runtime", "LLM runtime", "Agent pack") {
+	if !containsAll(view, "Setup Readiness", "Nex identity", "tmux office runtime", "LLM runtime", "Operation template") {
 		t.Fatalf("expected readiness summary in init view, got %q", view)
 	}
 	if !strings.Contains(view, "Paste your WUPHF/Nex API key") {
 		t.Fatalf("expected API key guidance in readiness summary, got %q", view)
+	}
+}
+
+func TestBlueprintOptionsIncludeTemplates(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	options := BlueprintOptions()
+	if len(options) == 0 {
+		t.Fatal("expected blueprint options")
+	}
+	if options[0].Value == "" {
+		t.Fatalf("expected blueprint option value, got %+v", options[0])
 	}
 }
 

@@ -3,6 +3,7 @@ package team
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -47,6 +48,26 @@ func TestNewLauncherUsesCodexProviderFromConfig(t *testing.T) {
 	}
 }
 
+func TestNewLauncherAcceptsOperationBlueprintID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("WUPHF_BROKER_TOKEN", "")
+	if err := config.Save(config.Config{LLMProvider: "codex"}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	l, err := NewLauncher("youtube-factory")
+	if err != nil {
+		t.Fatalf("NewLauncher: %v", err)
+	}
+	if got, want := l.packSlug, "youtube-factory"; got != want {
+		t.Fatalf("unexpected launcher blueprint id: got %q want %q", got, want)
+	}
+	if l.pack != nil {
+		t.Fatalf("expected no static pack for operation blueprint launch, got %+v", l.pack)
+	}
+}
+
 func TestBuildCodexOfficeConfigOverridesIncludesOfficeMCPEnv(t *testing.T) {
 	oldExecutablePath := headlessCodexExecutablePath
 	oldLookPath := headlessCodexLookPath
@@ -83,7 +104,7 @@ func TestBuildCodexOfficeConfigOverridesIncludesOfficeMCPEnv(t *testing.T) {
 	if !strings.Contains(joined, `mcp_servers.wuphf-office.args=["mcp-team"]`) {
 		t.Fatalf("expected WUPHF MCP args override, got %q", joined)
 	}
-	if !strings.Contains(joined, `mcp_servers.wuphf-office.env_vars=["WUPHF_AGENT_SLUG", "WUPHF_BROKER_TOKEN", "WUPHF_NO_NEX", "WUPHF_ONE_ON_ONE", "WUPHF_ONE_ON_ONE_AGENT"]`) {
+	if !strings.Contains(joined, `mcp_servers.wuphf-office.env_vars=["WUPHF_AGENT_SLUG", "WUPHF_BROKER_TOKEN", "WUPHF_BROKER_BASE_URL", "WUPHF_NO_NEX", "WUPHF_ONE_ON_ONE", "WUPHF_ONE_ON_ONE_AGENT"]`) {
 		t.Fatalf("expected office env var forwarding, got %q", joined)
 	}
 	if strings.Contains(joined, broker.Token()) {
@@ -145,13 +166,19 @@ func TestRunHeadlessCodexTurnUsesHeadlessOfficeRuntime(t *testing.T) {
 	if !strings.Contains(joinedArgs, "exec") || !strings.Contains(joinedArgs, "--ephemeral") {
 		t.Fatalf("expected codex exec args, got %#v", record.Args)
 	}
+	if !strings.Contains(joinedArgs, "-a never") || !strings.Contains(joinedArgs, "-s workspace-write") {
+		t.Fatalf("expected workspace-write sandbox for office turn, got %#v", record.Args)
+	}
+	if strings.Contains(joinedArgs, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("did not expect dangerous bypass for office turn, got %#v", record.Args)
+	}
 	if !strings.Contains(joinedArgs, "--disable plugins") {
 		t.Fatalf("expected plugins feature to be disabled, got %#v", record.Args)
 	}
 	if !strings.Contains(joinedArgs, `mcp_servers.wuphf-office.command="/tmp/wuphf"`) {
 		t.Fatalf("expected office MCP override, got %#v", record.Args)
 	}
-	if !strings.Contains(joinedArgs, `mcp_servers.wuphf-office.env_vars=["WUPHF_AGENT_SLUG", "WUPHF_BROKER_TOKEN", "ONE_SECRET", "ONE_IDENTITY", "ONE_IDENTITY_TYPE"]`) {
+	if !strings.Contains(joinedArgs, `mcp_servers.wuphf-office.env_vars=["WUPHF_AGENT_SLUG", "WUPHF_BROKER_TOKEN", "WUPHF_BROKER_BASE_URL", "ONE_SECRET", "ONE_IDENTITY", "ONE_IDENTITY_TYPE"]`) {
 		t.Fatalf("expected office env var forwarding, got %#v", record.Args)
 	}
 	if !strings.Contains(joinedArgs, `mcp_servers.nex.command="/usr/bin/nex-mcp"`) {
@@ -244,6 +271,8 @@ func TestRunHeadlessCodexTurnUsesAssignedWorktreeForCodingAgents(t *testing.T) {
 	t.Setenv("CODEX_TUI_SESSION_LOG_PATH", "/tmp/controller-session.jsonl")
 
 	broker := NewBroker()
+	ensureTestMemberAccess(broker, "general", "builder", "Builder")
+	ensureTestMemberAccess(broker, "general", "operator", "Operator")
 	task, _, err := broker.EnsurePlannedTask(plannedTaskInput{
 		Channel:       "general",
 		Title:         "Build the automation runtime",
@@ -278,6 +307,12 @@ func TestRunHeadlessCodexTurnUsesAssignedWorktreeForCodingAgents(t *testing.T) {
 	if got := argValue(record.Args, "-C"); !samePath(got, worktreeDir) {
 		t.Fatalf("expected codex worktree %q, got %q", worktreeDir, got)
 	}
+	if !strings.Contains(joinedArgs, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("expected dangerous bypass for local worktree turn, got %#v", record.Args)
+	}
+	if strings.Contains(joinedArgs, "-s workspace-write") {
+		t.Fatalf("did not expect workspace-write sandbox for local worktree turn, got %#v", record.Args)
+	}
 	if !strings.Contains(joinedArgs, "--disable plugins") {
 		t.Fatalf("expected plugins feature to be disabled, got %#v", record.Args)
 	}
@@ -308,6 +343,91 @@ func TestRunHeadlessCodexTurnUsesAssignedWorktreeForCodingAgents(t *testing.T) {
 		if containsEnvPrefix(record.Env, forbiddenPrefix) {
 			t.Fatalf("expected %s to be stripped, got %#v", forbiddenPrefix, record.Env)
 		}
+	}
+}
+
+func TestRunHeadlessCodexTurnUsesAssignedWorktreeForLocalWorktreeBuilder(t *testing.T) {
+	recordFile := filepath.Join(t.TempDir(), "headless-codex-record.jsonl")
+	worktreeDir := t.TempDir()
+	repoRoot := t.TempDir()
+
+	oldLookPath := headlessCodexLookPath
+	oldExecutablePath := headlessCodexExecutablePath
+	oldCommandContext := headlessCodexCommandContext
+	oldPrepareTaskWorktree := prepareTaskWorktree
+	headlessCodexLookPath = func(file string) (string, error) {
+		switch file {
+		case "codex":
+			return "/usr/bin/codex", nil
+		default:
+			return "", exec.ErrNotFound
+		}
+	}
+	headlessCodexExecutablePath = func() (string, error) { return "/tmp/wuphf", nil }
+	headlessCodexCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmdArgs := []string{"-test.run=TestHeadlessCodexHelperProcess", "--"}
+		cmdArgs = append(cmdArgs, args...)
+		return exec.CommandContext(ctx, os.Args[0], cmdArgs...)
+	}
+	prepareTaskWorktree = func(taskID string) (string, string, error) {
+		return worktreeDir, worktreeBranchName(taskID), nil
+	}
+	defer func() {
+		headlessCodexLookPath = oldLookPath
+		headlessCodexExecutablePath = oldExecutablePath
+		headlessCodexCommandContext = oldCommandContext
+		prepareTaskWorktree = oldPrepareTaskWorktree
+	}()
+
+	t.Setenv("GO_WANT_HEADLESS_CODEX_HELPER_PROCESS", "1")
+	t.Setenv("HEADLESS_CODEX_RECORD_FILE", recordFile)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PWD", repoRoot)
+
+	broker := NewBroker()
+	ensureTestMemberAccess(broker, "general", "builder", "Builder")
+	task, _, err := broker.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Build the dry-run intake packet",
+		Details:       "Implement in the assigned worktree.",
+		Owner:         "builder",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		PipelineID:    "feature",
+		ExecutionMode: "local_worktree",
+		ReviewState:   "pending_review",
+	})
+	if err != nil {
+		t.Fatalf("EnsurePlannedTask: %v", err)
+	}
+	if task.WorktreePath != worktreeDir {
+		t.Fatalf("expected assigned worktree %q, got %q", worktreeDir, task.WorktreePath)
+	}
+
+	l := &Launcher{
+		pack:        agent.GetPack("founding-team"),
+		cwd:         repoRoot,
+		broker:      broker,
+		headlessCtx: context.Background(),
+	}
+
+	if err := l.runHeadlessCodexTurn(context.Background(), "builder", "Ship the intake packet."); err != nil {
+		t.Fatalf("runHeadlessCodexTurn: %v", err)
+	}
+
+	record := readHeadlessCodexRecord(t, recordFile)
+	joinedArgs := strings.Join(record.Args, " ")
+	if got := argValue(record.Args, "-C"); !samePath(got, worktreeDir) {
+		t.Fatalf("expected codex worktree %q, got %q", worktreeDir, got)
+	}
+	if !strings.Contains(joinedArgs, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("expected dangerous bypass for local worktree turn, got %#v", record.Args)
+	}
+	if !samePath(record.Dir, worktreeDir) {
+		t.Fatalf("expected command dir %q, got %q", worktreeDir, record.Dir)
+	}
+	if got := envValue(record.Env, "WUPHF_WORKTREE_PATH"); !samePath(got, worktreeDir) {
+		t.Fatalf("expected worktree env, got %#v", record.Env)
 	}
 }
 
@@ -731,6 +851,164 @@ func TestFinishHeadlessTurnDoesNotWakeLeadWhenLeadAlreadyQueued(t *testing.T) {
 	}
 }
 
+func TestEnqueueHeadlessCodexTurnRecordDropsDuplicateLeadTaskWhileActive(t *testing.T) {
+	l := newHeadlessLauncherForTest()
+	l.pack = &agent.PackDefinition{LeadSlug: "ceo"}
+	l.headlessActive["ceo"] = &headlessCodexActiveTurn{
+		Turn: headlessCodexTurn{
+			Prompt: "first prompt about #task-3",
+			TaskID: "task-3",
+		},
+		StartedAt: time.Now(),
+	}
+
+	l.enqueueHeadlessCodexTurnRecord("ceo", headlessCodexTurn{
+		Prompt:     "second prompt about #task-3",
+		TaskID:     "task-3",
+		EnqueuedAt: time.Now(),
+	})
+
+	if got := len(l.headlessQueues["ceo"]); got != 0 {
+		t.Fatalf("expected no queued duplicate lead turn for same task, got %d", got)
+	}
+}
+
+func TestEnqueueHeadlessCodexTurnRecordQueuesUrgentLeadWakeForSameTask(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Review and advance the proof lane",
+		Owner:         "builder",
+		CreatedBy:     "ceo",
+		TaskType:      "follow_up",
+		ExecutionMode: "office",
+		ReviewState:   "ready_for_review",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+	for i := range b.tasks {
+		if b.tasks[i].ID == task.ID {
+			b.tasks[i].Status = "review"
+			b.tasks[i].ReviewState = "ready_for_review"
+			break
+		}
+	}
+
+	cancelled := false
+	l := newHeadlessLauncherForTest()
+	l.pack = &agent.PackDefinition{LeadSlug: "ceo"}
+	l.broker = b
+	l.headlessWorkers["ceo"] = true
+	l.headlessActive["ceo"] = &headlessCodexActiveTurn{
+		Turn: headlessCodexTurn{
+			Prompt: "first prompt about #" + task.ID,
+			TaskID: task.ID,
+		},
+		StartedAt: time.Now().Add(-2 * time.Minute),
+		Cancel: func() {
+			cancelled = true
+		},
+	}
+
+	l.enqueueHeadlessCodexTurnRecord("ceo", headlessCodexTurn{
+		Prompt:     "specialist handoff about #" + task.ID,
+		TaskID:     task.ID,
+		EnqueuedAt: time.Now(),
+	})
+
+	if got := len(l.headlessQueues["ceo"]); got != 1 {
+		t.Fatalf("expected urgent lead wake to queue behind same task, got %d", got)
+	}
+	if !cancelled {
+		t.Fatal("expected stale active lead turn to be cancelled for urgent same-task wake")
+	}
+}
+
+func TestEnqueueHeadlessCodexTurnRecordDropsDuplicateAgentTaskWhileActive(t *testing.T) {
+	l := newHeadlessLauncherForTest()
+	l.pack = &agent.PackDefinition{LeadSlug: "ceo"}
+	l.headlessActive["eng"] = &headlessCodexActiveTurn{
+		Turn: headlessCodexTurn{
+			Prompt: "first prompt about #task-11",
+			TaskID: "task-11",
+		},
+		StartedAt: time.Now(),
+	}
+
+	l.enqueueHeadlessCodexTurnRecord("eng", headlessCodexTurn{
+		Prompt:     "second prompt about #task-11",
+		TaskID:     "task-11",
+		EnqueuedAt: time.Now(),
+	})
+
+	if got := len(l.headlessQueues["eng"]); got != 0 {
+		t.Fatalf("expected no queued duplicate agent turn for same task, got %d", got)
+	}
+}
+
+func TestEnqueueHeadlessCodexTurnRecordReplacesPendingAgentTaskTurn(t *testing.T) {
+	l := newHeadlessLauncherForTest()
+	l.pack = &agent.PackDefinition{LeadSlug: "ceo"}
+	l.headlessWorkers["eng"] = true
+	l.headlessQueues["eng"] = []headlessCodexTurn{{
+		Prompt:     "older prompt about #task-11",
+		Channel:    "youtube-factory",
+		TaskID:     "task-11",
+		EnqueuedAt: time.Now().Add(-time.Minute),
+	}}
+
+	l.enqueueHeadlessCodexTurnRecord("eng", headlessCodexTurn{
+		Prompt:     "newer prompt about #task-11",
+		Channel:    "youtube-factory",
+		TaskID:     "task-11",
+		EnqueuedAt: time.Now(),
+	})
+
+	queue := l.headlessQueues["eng"]
+	if got := len(queue); got != 1 {
+		t.Fatalf("expected single queued agent turn for same task, got %d", got)
+	}
+	if got := queue[0].Prompt; got != "newer prompt about #task-11" {
+		t.Fatalf("expected queued agent turn to be replaced, got %q", got)
+	}
+}
+
+func TestEnqueueHeadlessCodexTurnRecordAllowsRetryBehindActiveAgentTask(t *testing.T) {
+	l := newHeadlessLauncherForTest()
+	l.pack = &agent.PackDefinition{LeadSlug: "ceo"}
+	l.headlessWorkers["eng"] = true
+	l.headlessActive["eng"] = &headlessCodexActiveTurn{
+		Turn: headlessCodexTurn{
+			Prompt:   "first prompt about #task-11",
+			TaskID:   "task-11",
+			Attempts: 0,
+		},
+		StartedAt: time.Now(),
+	}
+
+	l.enqueueHeadlessCodexTurnRecord("eng", headlessCodexTurn{
+		Prompt:     "retry prompt about #task-11",
+		Channel:    "youtube-factory",
+		TaskID:     "task-11",
+		Attempts:   1,
+		EnqueuedAt: time.Now(),
+	})
+
+	queue := l.headlessQueues["eng"]
+	if got := len(queue); got != 1 {
+		t.Fatalf("expected single queued retry turn for same task, got %d", got)
+	}
+	if got := queue[0].Prompt; got != "retry prompt about #task-11" {
+		t.Fatalf("expected retry turn to be queued, got %q", got)
+	}
+	if got := queue[0].Attempts; got != 1 {
+		t.Fatalf("expected retry attempt to be preserved, got %d", got)
+	}
+}
+
 func TestWakeLeadAfterSpecialistFallsBackToCompletedTaskUpdateWhenNoBroadcast(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -745,6 +1023,8 @@ func TestWakeLeadAfterSpecialistFallsBackToCompletedTaskUpdateWhenNoBroadcast(t 
 	defer func() { headlessCodexRunTurn = oldRunTurn }()
 
 	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "builder", "Builder")
+	ensureTestMemberAccess(b, "general", "operator", "Operator")
 	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
 		Channel:       "general",
 		Title:         "Lock the faceless YouTube niche",
@@ -789,6 +1069,15 @@ func TestRecoverTimedOutHeadlessTurnBlocksTaskWithoutSubstantiveReply(t *testing
 	t.Setenv("HOME", t.TempDir())
 
 	b := NewBroker()
+	b.mu.Lock()
+	b.members = append(b.members, officeMember{Slug: "cmo", Name: "Chief Marketing Officer"})
+	for i := range b.channels {
+		if b.channels[i].Slug == "general" {
+			b.channels[i].Members = append(b.channels[i].Members, "cmo")
+			break
+		}
+	}
+	b.mu.Unlock()
 	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
 		Channel:       "general",
 		Title:         "Research the best faceless wedge",
@@ -830,6 +1119,15 @@ func TestRecoverTimedOutHeadlessTurnLeavesTaskRunningAfterSubstantiveReply(t *te
 	t.Setenv("HOME", t.TempDir())
 
 	b := NewBroker()
+	b.mu.Lock()
+	b.members = append(b.members, officeMember{Slug: "cmo", Name: "Chief Marketing Officer"})
+	for i := range b.channels {
+		if b.channels[i].Slug == "general" {
+			b.channels[i].Members = append(b.channels[i].Members, "cmo")
+			break
+		}
+	}
+	b.mu.Unlock()
 	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
 		Channel:       "general",
 		Title:         "Research the best faceless wedge",
@@ -869,6 +1167,8 @@ func TestRecoverTimedOutHeadlessTurnRetriesLocalWorktreeOnceBeforeBlocking(t *te
 	t.Setenv("HOME", t.TempDir())
 
 	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "builder", "Builder")
+	ensureTestMemberAccess(b, "general", "operator", "Operator")
 	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
 		Channel:       "general",
 		Title:         "Implement the studio build",
@@ -902,6 +1202,63 @@ func TestRecoverTimedOutHeadlessTurnRetriesLocalWorktreeOnceBeforeBlocking(t *te
 	}
 	if !strings.Contains(retry.Prompt, "Previous attempt by @eng timed out") {
 		t.Fatalf("expected retry prompt note, got %q", retry.Prompt)
+	}
+
+	var updated teamTask
+	for _, candidate := range b.AllTasks() {
+		if candidate.ID == task.ID {
+			updated = candidate
+			break
+		}
+	}
+	if updated.ID == "" {
+		t.Fatalf("expected to find task %s", task.ID)
+	}
+	if updated.Status != "in_progress" || updated.Blocked {
+		t.Fatalf("expected task to remain active during retry, got %+v", updated)
+	}
+}
+
+func TestRecoverFailedHeadlessTurnRetriesLocalWorktreeOnceBeforeBlocking(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Implement queue mode for the YouTube factory",
+		Owner:         "eng",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+	l.headlessWorkers["eng"] = true
+
+	turn := headlessCodexTurn{
+		Prompt:   "Build #task-" + strings.TrimPrefix(task.ID, "task-"),
+		Channel:  "general",
+		TaskID:   task.ID,
+		Attempts: 0,
+	}
+	l.recoverFailedHeadlessTurn("eng", turn, time.Now().UTC().Add(-2*time.Second), "Selected model is at capacity. Please try a different model.")
+
+	if len(l.headlessQueues["eng"]) != 1 {
+		t.Fatalf("expected one queued retry, got %+v", l.headlessQueues["eng"])
+	}
+	retry := l.headlessQueues["eng"][0]
+	if retry.Attempts != 1 {
+		t.Fatalf("expected retry attempt 1, got %+v", retry)
+	}
+	if !strings.Contains(retry.Prompt, "Previous attempt by @eng failed") {
+		t.Fatalf("expected retry prompt note, got %q", retry.Prompt)
+	}
+	if !strings.Contains(retry.Prompt, "Selected model is at capacity") {
+		t.Fatalf("expected retry prompt to carry failure detail, got %q", retry.Prompt)
 	}
 
 	var updated teamTask
@@ -1070,6 +1427,415 @@ func TestRecoverTimedOutHeadlessTurnBlocksLocalWorktreeAfterRetryExhausted(t *te
 	}
 }
 
+func TestRecoverFailedHeadlessTurnBlocksLocalWorktreeAfterRetryExhausted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Implement queue mode for the YouTube factory",
+		Owner:         "eng",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+
+	l.recoverFailedHeadlessTurn("eng", headlessCodexTurn{
+		Prompt:   "Ship #task-" + strings.TrimPrefix(task.ID, "task-"),
+		Channel:  "general",
+		TaskID:   task.ID,
+		Attempts: headlessCodexLocalWorktreeRetryLimit,
+	}, time.Now().UTC().Add(-2*time.Second), "Selected model is at capacity. Please try a different model.")
+
+	var updated teamTask
+	for _, candidate := range b.AllTasks() {
+		if candidate.ID == task.ID {
+			updated = candidate
+			break
+		}
+	}
+	if updated.ID == "" {
+		t.Fatalf("expected to find task %s", task.ID)
+	}
+	if updated.Status != "blocked" || !updated.Blocked {
+		t.Fatalf("expected task to be blocked after retry budget exhausted, got %+v", updated)
+	}
+	if !strings.Contains(updated.Details, "Selected model is at capacity") {
+		t.Fatalf("expected failure detail appended, got %+v", updated)
+	}
+}
+
+func TestHeadlessTurnCompletedDurablyRejectsCodingTurnWithoutTaskStateOrEvidence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	oldSnapshot := headlessCodexWorkspaceStatusSnapshot
+	headlessCodexWorkspaceStatusSnapshot = func(string) string {
+		return "after-change"
+	}
+	defer func() { headlessCodexWorkspaceStatusSnapshot = oldSnapshot }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "builder", "Builder")
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Implement the durable turn guard",
+		Owner:         "eng",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+
+	ok, reason := l.headlessTurnCompletedDurably("eng", &headlessCodexActiveTurn{
+		Turn: headlessCodexTurn{
+			TaskID: task.ID,
+		},
+		StartedAt:         time.Now().UTC().Add(-2 * time.Second),
+		WorkspaceDir:      t.TempDir(),
+		WorkspaceSnapshot: "before-change",
+	})
+	if ok {
+		t.Fatal("expected coding turn without task closure or evidence to be rejected")
+	}
+	if !strings.Contains(reason, "without durable task state or completion evidence") && !strings.Contains(reason, "changed workspace") {
+		t.Fatalf("expected durable completion failure reason, got %q", reason)
+	}
+}
+
+func TestHeadlessTurnCompletedDurablyAcceptsReviewReadyTask(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	oldSnapshot := headlessCodexWorkspaceStatusSnapshot
+	headlessCodexWorkspaceStatusSnapshot = func(string) string {
+		return "after-change"
+	}
+	defer func() { headlessCodexWorkspaceStatusSnapshot = oldSnapshot }()
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Implement the durable turn guard",
+		Owner:         "eng",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+	for i := range b.tasks {
+		if b.tasks[i].ID != task.ID {
+			continue
+		}
+		b.tasks[i].Status = "review"
+		b.tasks[i].ReviewState = "ready_for_review"
+		break
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+
+	ok, reason := l.headlessTurnCompletedDurably("eng", &headlessCodexActiveTurn{
+		Turn: headlessCodexTurn{
+			TaskID: task.ID,
+		},
+		StartedAt:         time.Now().UTC().Add(-2 * time.Second),
+		WorkspaceDir:      t.TempDir(),
+		WorkspaceSnapshot: "before-change",
+	})
+	if !ok {
+		t.Fatalf("expected review-ready task to satisfy durable completion, got %q", reason)
+	}
+}
+
+func TestHeadlessTurnCompletedDurablyRejectsLocalWorktreeBuilderWithoutTaskStateOrEvidence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	oldSnapshot := headlessCodexWorkspaceStatusSnapshot
+	headlessCodexWorkspaceStatusSnapshot = func(string) string {
+		return "after-change"
+	}
+	defer func() { headlessCodexWorkspaceStatusSnapshot = oldSnapshot }()
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Build the dry-run intake packet",
+		Owner:         "builder",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+
+	ok, reason := l.headlessTurnCompletedDurably("builder", &headlessCodexActiveTurn{
+		Turn: headlessCodexTurn{
+			TaskID: task.ID,
+		},
+		StartedAt:         time.Now().UTC().Add(-2 * time.Second),
+		WorkspaceDir:      t.TempDir(),
+		WorkspaceSnapshot: "before-change",
+	})
+	if ok {
+		t.Fatal("expected local_worktree builder turn without task closure or evidence to be rejected")
+	}
+	if !strings.Contains(reason, "without durable task state or completion evidence") && !strings.Contains(reason, "changed workspace") {
+		t.Fatalf("expected durable completion failure reason, got %q", reason)
+	}
+}
+
+func TestHeadlessTurnCompletedDurablyRejectsExternalCompletionWithoutWorkflowEvidence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:     "general",
+		Title:       "Create one new Notion proof artifact for the consulting proof",
+		Details:     "Use the connected Notion workspace and leave evidence in channel.",
+		Owner:       "builder",
+		CreatedBy:   "ceo",
+		TaskType:    "follow_up",
+		ReviewState: "ready_for_review",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+	for i := range b.tasks {
+		if b.tasks[i].ID == task.ID {
+			b.tasks[i].Status = "review"
+			b.tasks[i].ReviewState = "ready_for_review"
+			break
+		}
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+
+	ok, reason := l.headlessTurnCompletedDurably("builder", &headlessCodexActiveTurn{
+		Turn:      headlessCodexTurn{TaskID: task.ID},
+		StartedAt: time.Now().UTC().Add(-2 * time.Second),
+	})
+	if ok {
+		t.Fatal("expected external completion without workflow evidence to be rejected")
+	}
+	if !strings.Contains(reason, "without recorded external execution evidence") {
+		t.Fatalf("expected external evidence failure reason, got %q", reason)
+	}
+}
+
+func TestHeadlessTurnCompletedDurablyAcceptsExternalCompletionWithWorkflowEvidence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:     "general",
+		Title:       "Create one new Notion proof artifact for the consulting proof",
+		Details:     "Use the connected Notion workspace and leave evidence in channel.",
+		Owner:       "builder",
+		CreatedBy:   "ceo",
+		TaskType:    "follow_up",
+		ReviewState: "ready_for_review",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+	for i := range b.tasks {
+		if b.tasks[i].ID == task.ID {
+			b.tasks[i].Status = "review"
+			b.tasks[i].ReviewState = "ready_for_review"
+			break
+		}
+	}
+	if err := b.RecordAction("external_workflow_executed", "notion", "general", "builder", "Created proof page in Notion", "workflow-notion-proof", nil, ""); err != nil {
+		t.Fatalf("record action: %v", err)
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+
+	ok, reason := l.headlessTurnCompletedDurably("builder", &headlessCodexActiveTurn{
+		Turn:      headlessCodexTurn{TaskID: task.ID},
+		StartedAt: time.Now().UTC().Add(-2 * time.Second),
+	})
+	if !ok {
+		t.Fatalf("expected external completion with workflow evidence to be accepted, got %q", reason)
+	}
+}
+
+func TestHeadlessTurnCompletedDurablyAcceptsExternalCompletionWithActionEvidence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:     "general",
+		Title:       "Create one new Notion proof artifact for the consulting proof",
+		Details:     "Use the connected Notion workspace and leave evidence in channel.",
+		Owner:       "reviewer",
+		CreatedBy:   "ceo",
+		TaskType:    "follow_up",
+		ReviewState: "not_required",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+	for i := range b.tasks {
+		if b.tasks[i].ID == task.ID {
+			b.tasks[i].Status = "done"
+			b.tasks[i].ReviewState = "not_required"
+			break
+		}
+	}
+	if err := b.RecordAction("external_action_executed", "one", "general", "reviewer", "Verified proof page in Notion", "notion-page-proof", nil, ""); err != nil {
+		t.Fatalf("record action: %v", err)
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+
+	ok, reason := l.headlessTurnCompletedDurably("reviewer", &headlessCodexActiveTurn{
+		Turn:      headlessCodexTurn{TaskID: task.ID},
+		StartedAt: time.Now().UTC().Add(-2 * time.Second),
+	})
+	if !ok {
+		t.Fatalf("expected external completion with action evidence to be accepted, got %q", reason)
+	}
+}
+
+func TestBeginHeadlessCodexTurnCapturesWorktreeForLocalWorktreeBuilder(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	worktreeDir := t.TempDir()
+	oldPrepareTaskWorktree := prepareTaskWorktree
+	oldSnapshot := headlessCodexWorkspaceStatusSnapshot
+	prepareTaskWorktree = func(taskID string) (string, string, error) {
+		return worktreeDir, worktreeBranchName(taskID), nil
+	}
+	headlessCodexWorkspaceStatusSnapshot = func(path string) string {
+		if !samePath(path, worktreeDir) {
+			t.Fatalf("expected workspace snapshot to target %q, got %q", worktreeDir, path)
+		}
+		return "snapshot"
+	}
+	defer func() {
+		prepareTaskWorktree = oldPrepareTaskWorktree
+		headlessCodexWorkspaceStatusSnapshot = oldSnapshot
+	}()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "builder", "Builder")
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Build the dry-run intake packet",
+		Owner:         "builder",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+	l.headlessQueues["builder"] = []headlessCodexTurn{{TaskID: task.ID}}
+
+	_, _, _, _, ok := l.beginHeadlessCodexTurn("builder")
+	if !ok {
+		t.Fatal("expected queued builder turn to begin")
+	}
+	active := l.headlessActive["builder"]
+	if active == nil {
+		t.Fatal("expected active builder turn")
+	}
+	if !samePath(active.WorkspaceDir, worktreeDir) {
+		t.Fatalf("expected builder workspace %q, got %q", worktreeDir, active.WorkspaceDir)
+	}
+	if active.WorkspaceSnapshot != "snapshot" {
+		t.Fatalf("expected workspace snapshot to be recorded, got %q", active.WorkspaceSnapshot)
+	}
+}
+
+func TestRunHeadlessCodexQueueRetriesLocalWorktreeAfterGenericError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Implement queue mode for the YouTube factory",
+		Owner:         "eng",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+
+	oldRunTurn := headlessCodexRunTurn
+	defer func() { headlessCodexRunTurn = oldRunTurn }()
+
+	processed := make(chan string, 2)
+	attempt := 0
+	headlessCodexRunTurn = func(_ *Launcher, _ context.Context, _ string, notification string, channel ...string) error {
+		attempt++
+		processed <- notification
+		if attempt == 1 {
+			return fmt.Errorf("Selected model is at capacity. Please try a different model.")
+		}
+		return nil
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+	l.headlessWorkers["eng"] = true
+	l.headlessQueues["eng"] = []headlessCodexTurn{{
+		Prompt:     "Build #task-" + strings.TrimPrefix(task.ID, "task-"),
+		Channel:    "general",
+		TaskID:     task.ID,
+		Attempts:   0,
+		EnqueuedAt: time.Now(),
+	}}
+
+	done := make(chan struct{})
+	go func() {
+		l.runHeadlessCodexQueue("eng")
+		close(done)
+	}()
+
+	first := waitForString(t, processed)
+	second := waitForString(t, processed)
+	if first == second {
+		t.Fatalf("expected retry prompt to differ from the original prompt, got %q", first)
+	}
+	if !strings.Contains(second, "Previous attempt by @eng failed") {
+		t.Fatalf("expected retry prompt note, got %q", second)
+	}
+	if !strings.Contains(second, "Selected model is at capacity") {
+		t.Fatalf("expected retry prompt to include provider failure, got %q", second)
+	}
+	waitForSignal(t, done)
+}
+
 func TestHeadlessCodexTurnTimeoutForLocalWorktreeTask(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -1157,9 +1923,14 @@ func TestEnqueueHeadlessCodexTurnBypassesLeadHoldForReviewReadyTask(t *testing.T
 	}
 	defer func() { headlessCodexRunTurn = oldRunTurn }()
 
+	oldStatePath := brokerStatePath
+	stateDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(stateDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldStatePath }()
+
 	b := NewBroker()
 	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
-		Channel:       "youtube-factory",
+		Channel:       "general",
 		Title:         "Define channel thesis and monetization system",
 		Owner:         "gtm",
 		CreatedBy:     "ceo",
@@ -1188,7 +1959,7 @@ func TestEnqueueHeadlessCodexTurnBypassesLeadHoldForReviewReadyTask(t *testing.T
 	action := officeActionLog{
 		Kind:      "task_updated",
 		Actor:     "gtm",
-		Channel:   "youtube-factory",
+		Channel:   "general",
 		RelatedID: task.ID,
 	}
 	content := l.taskNotificationContent(action, task)

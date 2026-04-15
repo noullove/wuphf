@@ -419,7 +419,6 @@ var mentionPattern = regexp.MustCompile(`@([A-Za-z0-9_-]+)`)
 var brokerTokenPath = "/tmp/wuphf-broker-token"
 var officeDirectory = map[string]officeMemberInfo{}
 
-
 var channelSlashCommands = []tui.SlashCommand{
 	{Name: "init", Description: "Run setup (Ryan Howard skipped this step — don't be Ryan)", Category: "setup"},
 	{Name: "provider", Description: "Switch LLM provider (choose wisely, Michael)", Category: "setup"},
@@ -495,7 +494,7 @@ type channelPickerMode string
 const (
 	channelPickerNone           channelPickerMode = ""
 	channelPickerInitProvider   channelPickerMode = "init_provider"
-	channelPickerInitPack       channelPickerMode = "init_pack"
+	channelPickerInitBlueprint  channelPickerMode = "init_blueprint"
 	channelPickerProvider       channelPickerMode = "provider"
 	channelPickerIntegrations   channelPickerMode = "integrations"
 	channelPickerRequests       channelPickerMode = "requests"
@@ -2144,10 +2143,10 @@ func (m channelModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.picker = tui.NewPicker("Choose LLM Provider", tui.ProviderOptions())
 			m.picker.SetActive(true)
 			m.pickerMode = channelPickerInitProvider
-		case tui.InitPackChoice:
-			m.picker = tui.NewPicker("Choose Agent Pack", tui.PackOptions())
+		case tui.InitBlueprintChoice, tui.InitPackChoice:
+			m.picker = tui.NewPicker("Choose Operation Template", tui.BlueprintOptions())
 			m.picker.SetActive(true)
-			m.pickerMode = channelPickerInitPack
+			m.pickerMode = channelPickerInitBlueprint
 		case tui.InitDone:
 			m.posting = true
 			return m, tea.Batch(cmd, applyTeamSetup())
@@ -5126,7 +5125,6 @@ func extractTagsFromText(text string) []string {
 	return tags
 }
 
-
 func channelExists(channels []channelInfo, slug string) bool {
 	for _, ch := range channels {
 		if ch.Slug == slug {
@@ -5348,9 +5346,6 @@ func (m channelModel) buildCalendarAgentPickerOptions() []tui.PickerOption {
 	return options
 }
 
-
-
-
 func createSkill(description, channel string) tea.Cmd {
 	return func() tea.Msg {
 		payload := map[string]string{
@@ -5389,8 +5384,6 @@ func invokeSkill(name string) tea.Cmd {
 		return channelSkillsMsg{}
 	}
 }
-
-
 
 func resetDMSession(agent string, channel string) tea.Cmd {
 	return func() tea.Msg {
@@ -5629,7 +5622,7 @@ func killTeamSession() {
 	// Kill tmux session (kills all agent processes in all panes/windows)
 	exec.Command("tmux", "-L", "wuphf", "kill-session", "-t", "wuphf-team").Run()
 	// Stop the broker
-	http.Get("http://127.0.0.1:7890/health") // just to check; broker stops with the process
+	http.Get(brokerURL("/health")) // just to check; broker stops with the process
 }
 
 func resolveInitialOfficeApp(name string) officeApp {
@@ -5654,9 +5647,9 @@ func runChannelView(threadsCollapsed bool, initialApp officeApp, skipSplash bool
 
 	// Check if onboarding is needed before launching the channel view.
 	if os.Getenv("WUPHF_SKIP_ONBOARDING") == "" {
-		state, err := fetchOnboardingState(brokerBaseURL)
+		state, err := fetchOnboardingState(brokerBaseURL())
 		if err == nil && !state.Onboarded {
-			om := newOnboardingModel(brokerBaseURL, 0, 0)
+			om := newOnboardingModel(brokerBaseURL(), 0, 0)
 			op := tea.NewProgram(om, tea.WithAltScreen())
 			if _, err := op.Run(); err != nil {
 				reportChannelCrash(fmt.Sprintf("onboarding error: %v\n", err))

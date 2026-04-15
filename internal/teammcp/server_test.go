@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nex-crm/wuphf/internal/team"
@@ -23,6 +25,85 @@ func textFromResult(t *testing.T, result *mcp.CallToolResult) string {
 		t.Fatalf("expected text content, got %T", result.Content[0])
 	}
 	return text.Text
+}
+
+func TestConfigureServerToolsExposesActionToolsToOfficeSpecialists(t *testing.T) {
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "wuphf-team-test", Version: "0.1.0"}, nil)
+	configureServerTools(server, "workflow-architect", "general", false)
+
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Wait()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	tools, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	names := make([]string, 0, len(tools.Tools))
+	for _, tool := range tools.Tools {
+		names = append(names, tool.Name)
+	}
+	if !slices.Contains(names, "team_action_connections") {
+		t.Fatalf("expected team_action_connections for office specialist, got %v", names)
+	}
+	if !slices.Contains(names, "team_action_workflow_execute") {
+		t.Fatalf("expected team_action_workflow_execute for office specialist, got %v", names)
+	}
+}
+
+func TestConfigureServerToolsAnnotatesActionTools(t *testing.T) {
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "wuphf-team-test", Version: "0.1.0"}, nil)
+	configureServerTools(server, "workflow-architect", "general", false)
+
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Wait()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	tools, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+
+	var connections *mcp.Tool
+	var execute *mcp.Tool
+	for i := range tools.Tools {
+		switch tools.Tools[i].Name {
+		case "team_action_connections":
+			connections = tools.Tools[i]
+		case "team_action_execute":
+			execute = tools.Tools[i]
+		}
+	}
+	if connections == nil || connections.Annotations == nil || !connections.Annotations.ReadOnlyHint {
+		t.Fatalf("expected team_action_connections to be read-only, got %+v", connections)
+	}
+	if execute == nil || execute.Annotations == nil || execute.Annotations.DestructiveHint == nil || *execute.Annotations.DestructiveHint {
+		t.Fatalf("expected team_action_execute to be a non-destructive write tool, got %+v", execute)
+	}
 }
 
 func TestSuppressBroadcastReasonBlocksOutOfDomainReply(t *testing.T) {
@@ -103,6 +184,50 @@ func TestSuppressBroadcastReasonBlocksFEOnPureBackend(t *testing.T) {
 	)
 	if reason == "" {
 		t.Error("FE agent should be suppressed for pure backend/database content")
+	}
+}
+
+func TestSuppressBroadcastReasonAllowsRecentlyCompletedOwnedTaskBroadcast(t *testing.T) {
+	reason := suppressBroadcastReason(
+		"gtm",
+		"Here is the locked monetization ladder and CTA routing for the launch packet.",
+		"",
+		nil,
+		[]brokerTaskSummary{
+			{
+				ID:        "task-4",
+				Owner:     "gtm",
+				Status:    "done",
+				Title:     "Lock the launch monetization path for the flagship WUPHF episode",
+				Details:   "Finalize monetization ladder and CTA routing for the first live upload.",
+				UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
+			},
+		},
+	)
+	if reason != "" {
+		t.Fatalf("expected recently completed owned-task broadcast to be allowed, got %q", reason)
+	}
+}
+
+func TestSuppressBroadcastReasonBlocksStaleCompletedOwnedTaskBroadcast(t *testing.T) {
+	reason := suppressBroadcastReason(
+		"gtm",
+		"Here is the locked monetization ladder and CTA routing for the launch packet.",
+		"",
+		nil,
+		[]brokerTaskSummary{
+			{
+				ID:        "task-4",
+				Owner:     "gtm",
+				Status:    "done",
+				Title:     "Lock the launch monetization path for the flagship WUPHF episode",
+				Details:   "Finalize monetization ladder and CTA routing for the first live upload.",
+				UpdatedAt: time.Now().Add(-30 * time.Minute).Format(time.RFC3339),
+			},
+		},
+	)
+	if reason == "" {
+		t.Fatal("expected stale completed task to stop authorizing out-of-domain broadcast")
 	}
 }
 

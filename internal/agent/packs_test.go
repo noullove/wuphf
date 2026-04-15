@@ -3,10 +3,11 @@ package agent
 import "testing"
 
 func TestPacksRegistered(t *testing.T) {
-	if len(Packs) != 5 {
-		t.Fatalf("expected 5 packs, got %d", len(Packs))
+	packs := ListLegacyPacks()
+	if len(packs) != 5 {
+		t.Fatalf("expected 5 packs, got %d", len(packs))
 	}
-	founding := GetPack("founding-team")
+	founding := LookupLegacyPack("founding-team")
 	if founding == nil {
 		t.Fatal("founding-team pack not found")
 	}
@@ -29,13 +30,13 @@ func TestPacksRegistered(t *testing.T) {
 }
 
 func TestGetPackReturnsNilForUnknown(t *testing.T) {
-	if GetPack("nonexistent") != nil {
+	if LookupLegacyPack("nonexistent") != nil {
 		t.Error("expected nil for unknown pack")
 	}
 }
 
 func TestAllPacksHaveLeadInAgents(t *testing.T) {
-	for _, pack := range Packs {
+	for _, pack := range ListLegacyPacks() {
 		found := false
 		for _, a := range pack.Agents {
 			if a.Slug == pack.LeadSlug {
@@ -50,7 +51,7 @@ func TestAllPacksHaveLeadInAgents(t *testing.T) {
 }
 
 func TestCodingTeamPack(t *testing.T) {
-	p := GetPack("coding-team")
+	p := LookupLegacyPack("coding-team")
 	if p == nil {
 		t.Fatal("coding-team pack not found")
 	}
@@ -63,7 +64,7 @@ func TestCodingTeamPack(t *testing.T) {
 }
 
 func TestLeadGenAgencyPack(t *testing.T) {
-	p := GetPack("lead-gen-agency")
+	p := LookupLegacyPack("lead-gen-agency")
 	if p == nil {
 		t.Fatal("lead-gen-agency pack not found")
 	}
@@ -76,7 +77,7 @@ func TestLeadGenAgencyPack(t *testing.T) {
 }
 
 func TestRevOpsPack(t *testing.T) {
-	p := GetPack("revops")
+	p := LookupLegacyPack("revops")
 	if p == nil {
 		t.Fatal("revops pack not found")
 	}

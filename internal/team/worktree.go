@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 
 var prepareTaskWorktree = defaultPrepareTaskWorktree
 var cleanupTaskWorktree = defaultCleanupTaskWorktree
+var taskWorktreeRootDir = defaultTaskWorktreeRootDir
+var verifyTaskWorktreeWritable = defaultVerifyTaskWorktreeWritable
 
 var overlaySourceWorkspaceSkipExact = map[string]struct{}{
 	".playwright-cli": {},
@@ -21,7 +24,7 @@ var overlaySourceWorkspaceSkipExact = map[string]struct{}{
 var overlaySourceWorkspaceSkipPrefixes = []string{
 	".playwright-cli/",
 	".playwright-mcp/",
-	".wuphf/cache/",
+	".wuphf/",
 }
 
 func defaultPrepareTaskWorktree(taskID string) (string, string, error) {
@@ -30,12 +33,24 @@ func defaultPrepareTaskWorktree(taskID string) (string, string, error) {
 		return "", "", err
 	}
 
-	branch := worktreeBranchName(taskID)
-	path := filepath.Join(os.TempDir(), "wuphf-task-"+sanitizeWorktreeToken(taskID))
+	branch := worktreeBranchNameForRepo(taskID, repoRoot)
+	root := taskWorktreeRootDir(repoRoot)
+	if strings.TrimSpace(root) == "" {
+		root = filepath.Join(os.TempDir(), "wuphf-task-worktrees")
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", "", fmt.Errorf("prepare task worktree root: %w", err)
+	}
+	path := filepath.Join(root, "wuphf-task-"+sanitizeWorktreeToken(taskID))
+	_ = cleanupTaskWorktreeAtRepoRoot(repoRoot, path, branch)
 	finish := func(path, branch string) (string, string, error) {
 		if err := overlaySourceWorkspace(repoRoot, path); err != nil {
-			_ = defaultCleanupTaskWorktree(path, branch)
+			_ = cleanupTaskWorktreeAtRepoRoot(repoRoot, path, branch)
 			return "", "", fmt.Errorf("overlay source workspace: %w", err)
+		}
+		if err := overlayPersistedTaskWorktrees(path, taskID); err != nil {
+			_ = cleanupTaskWorktreeAtRepoRoot(repoRoot, path, branch)
+			return "", "", fmt.Errorf("overlay prior task worktrees: %w", err)
 		}
 		return path, branch, nil
 	}
@@ -43,7 +58,7 @@ func defaultPrepareTaskWorktree(taskID string) (string, string, error) {
 	if firstErr == nil {
 		return finish(path, branch)
 	}
-	_ = defaultCleanupTaskWorktree(path, branch)
+	_ = cleanupTaskWorktreeAtRepoRoot(repoRoot, path, branch)
 	if err := runGit(repoRoot, "worktree", "add", "-b", branch, path, "HEAD"); err == nil {
 		return finish(path, branch)
 	}
@@ -59,7 +74,40 @@ func defaultCleanupTaskWorktree(path, branch string) error {
 	if err != nil {
 		return err
 	}
+	return cleanupTaskWorktreeAtRepoRoot(repoRoot, path, branch)
+}
 
+func defaultVerifyTaskWorktreeWritable(path string) error {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" {
+		return fmt.Errorf("task worktree path required")
+	}
+	if !worktreePathLooksSafe(path) {
+		return fmt.Errorf("unsafe task worktree path %q", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat task worktree: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("task worktree is not a directory: %q", path)
+	}
+	probe, err := os.CreateTemp(path, ".wuphf-write-probe-*")
+	if err != nil {
+		return fmt.Errorf("write probe failed: %w", err)
+	}
+	probePath := probe.Name()
+	if closeErr := probe.Close(); closeErr != nil {
+		_ = os.Remove(probePath)
+		return fmt.Errorf("close write probe: %w", closeErr)
+	}
+	if err := os.Remove(probePath); err != nil {
+		return fmt.Errorf("cleanup write probe: %w", err)
+	}
+	return nil
+}
+
+func cleanupTaskWorktreeAtRepoRoot(repoRoot, path, branch string) error {
 	var failures []string
 	if strings.TrimSpace(path) != "" {
 		if err := runGit(repoRoot, "worktree", "remove", "--force", path); err != nil {
@@ -99,6 +147,18 @@ func gitRepoRoot() (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+func defaultTaskWorktreeRootDir(repoRoot string) string {
+	repoToken := sanitizeWorktreeToken(filepath.Base(strings.TrimSpace(repoRoot)))
+	if repoToken == "" {
+		repoToken = "workspace"
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".wuphf", "task-worktrees", repoToken)
+	}
+	return filepath.Join(os.TempDir(), "wuphf-task-worktrees", repoToken)
+}
+
 func runGit(dir string, args ...string) error {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
@@ -124,15 +184,18 @@ func runGitOutput(dir string, args ...string) ([]byte, error) {
 }
 
 func overlaySourceWorkspace(repoRoot, worktreePath string) error {
-	changed, err := runGitOutput(repoRoot, "diff", "--name-only", "-z", "HEAD", "--")
-	if err != nil {
-		return err
-	}
-	untracked, err := runGitOutput(repoRoot, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return err
-	}
+	return overlayWorkspaceChanges(repoRoot, worktreePath)
+}
 
+func overlayWorkspaceChanges(sourceRoot, worktreePath string) error {
+	changed, err := runGitOutput(sourceRoot, "diff", "--name-only", "-z", "HEAD", "--")
+	if err != nil {
+		return err
+	}
+	untracked, err := runGitOutput(sourceRoot, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return err
+	}
 	seen := map[string]struct{}{}
 	for _, raw := range append(bytes.Split(changed, []byte{0}), bytes.Split(untracked, []byte{0})...) {
 		rel := strings.TrimSpace(string(raw))
@@ -146,7 +209,7 @@ func overlaySourceWorkspace(repoRoot, worktreePath string) error {
 			continue
 		}
 		seen[rel] = struct{}{}
-		src := filepath.Join(repoRoot, filepath.FromSlash(rel))
+		src := filepath.Join(sourceRoot, filepath.FromSlash(rel))
 		dst := filepath.Join(worktreePath, filepath.FromSlash(rel))
 		info, statErr := os.Lstat(src)
 		if statErr != nil {
@@ -163,6 +226,72 @@ func overlaySourceWorkspace(repoRoot, worktreePath string) error {
 		}
 	}
 	return nil
+}
+
+func overlayPersistedTaskWorktrees(worktreePath string, currentTaskID string) error {
+	raw, err := os.ReadFile(brokerStatePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var state struct {
+		Tasks []teamTask `json:"tasks"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return err
+	}
+
+	seenSources := make(map[string]struct{})
+	for _, task := range state.Tasks {
+		if strings.TrimSpace(task.ID) == strings.TrimSpace(currentTaskID) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(task.Status))
+		if status != "done" && status != "review" {
+			continue
+		}
+		sourcePath := strings.TrimSpace(task.WorktreePath)
+		if sourcePath == "" {
+			continue
+		}
+		if sameCleanPath(sourcePath, worktreePath) {
+			continue
+		}
+		sourceKey := filepath.Clean(sourcePath)
+		if _, seen := seenSources[sourceKey]; seen {
+			continue
+		}
+		seenSources[sourceKey] = struct{}{}
+		if !taskWorktreeSourceLooksUsable(sourcePath) {
+			continue
+		}
+		if err := overlayWorkspaceChanges(sourcePath, worktreePath); err != nil {
+			return fmt.Errorf("%s: %w", task.ID, err)
+		}
+	}
+	return nil
+}
+
+func taskWorktreeSourceLooksUsable(path string) bool {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	out, err := runGitOutput(path, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(string(out)), "true")
 }
 
 func shouldOverlaySourceWorkspacePath(rel string) bool {
@@ -213,7 +342,35 @@ func gitRefExists(dir, ref string) bool {
 }
 
 func worktreeBranchName(taskID string) string {
-	return "wuphf-" + sanitizeWorktreeToken(taskID)
+	repoRoot, err := gitRepoRoot()
+	if err != nil {
+		return "wuphf-" + sanitizeWorktreeToken(taskID)
+	}
+	return worktreeBranchNameForRepo(taskID, repoRoot)
+}
+
+func worktreeBranchNameForRepo(taskID string, repoRoot string) string {
+	taskToken := sanitizeWorktreeToken(taskID)
+	if taskToken == "" {
+		taskToken = "task"
+	}
+	if namespace := worktreeNamespaceToken(repoRoot); namespace != "" {
+		return "wuphf-" + namespace + "-" + taskToken
+	}
+	return "wuphf-" + taskToken
+}
+
+func worktreeNamespaceToken(repoRoot string) string {
+	root := strings.TrimSpace(taskWorktreeRootDir(repoRoot))
+	if root == "" {
+		root = strings.TrimSpace(repoRoot)
+	}
+	if root == "" {
+		return ""
+	}
+	sum := fnv.New32a()
+	_, _ = sum.Write([]byte(filepath.Clean(root)))
+	return fmt.Sprintf("%08x", sum.Sum32())
 }
 
 func CleanupPersistedTaskWorktrees() error {
@@ -258,14 +415,43 @@ func worktreePathLooksSafe(path string) bool {
 	if path == "" {
 		return false
 	}
+	if !strings.Contains(filepath.Base(path), "wuphf-task-") {
+		return false
+	}
+	for _, root := range managedWorktreeRoots() {
+		if pathWithinRoot(path, root) {
+			return true
+		}
+	}
 	tempRoot := filepath.Clean(os.TempDir())
-	if tempRoot == "." || tempRoot == "" {
+	return pathWithinRoot(path, tempRoot)
+}
+
+func managedWorktreeRoots() []string {
+	roots := make([]string, 0, 2)
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		roots = append(roots, filepath.Join(home, ".wuphf", "task-worktrees"))
+	}
+	roots = append(roots, filepath.Join(os.TempDir(), "wuphf-task-worktrees"))
+	return roots
+}
+
+func pathWithinRoot(path string, root string) bool {
+	path = filepath.Clean(strings.TrimSpace(path))
+	root = filepath.Clean(strings.TrimSpace(root))
+	if path == "" || root == "" || root == "." {
 		return false
 	}
-	if !strings.HasPrefix(path, tempRoot+string(os.PathSeparator)) && path != tempRoot {
+	return path == root || strings.HasPrefix(path, root+string(os.PathSeparator))
+}
+
+func sameCleanPath(a string, b string) bool {
+	a = filepath.Clean(strings.TrimSpace(a))
+	b = filepath.Clean(strings.TrimSpace(b))
+	if a == "" || b == "" {
 		return false
 	}
-	return strings.Contains(filepath.Base(path), "wuphf-task-")
+	return a == b
 }
 
 func sanitizeWorktreeToken(value string) string {

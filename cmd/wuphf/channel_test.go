@@ -412,7 +412,7 @@ func TestProviderCommandOpensProviderPicker(t *testing.T) {
 
 func TestProviderSelectionSavesCodexAndRequestsRestart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := config.Save(config.Config{LLMProvider: "claude-code", Pack: "founding-team"}); err != nil {
+	if err := config.Save(config.Config{LLMProvider: "claude-code", Blueprint: "multi-agent-workflow-consulting"}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
 

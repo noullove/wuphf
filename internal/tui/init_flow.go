@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/nex-crm/wuphf/internal/agent"
 	"github.com/nex-crm/wuphf/internal/config"
+	"github.com/nex-crm/wuphf/internal/operations"
 )
 
 var initFlowLookPathFn = exec.LookPath
@@ -23,20 +26,21 @@ type initReadinessCheck struct {
 type InitPhase string
 
 const (
-	InitIdle           InitPhase = "idle"
-	InitAPIKey         InitPhase = "api_key"
-	InitProviderChoice InitPhase = "provider_choice" // kept for backward compat, skipped in flow
-	InitOneAPIKey      InitPhase = "one_api_key"     // kept for backward compat, skipped in flow
-	InitPackChoice     InitPhase = "pack_choice"     // kept for backward compat, skipped in flow
-	InitDone           InitPhase = "done"
+	InitIdle            InitPhase = "idle"
+	InitAPIKey          InitPhase = "api_key"
+	InitProviderChoice  InitPhase = "provider_choice" // kept for backward compat, skipped in flow
+	InitOneAPIKey       InitPhase = "one_api_key"     // kept for backward compat, skipped in flow
+	InitBlueprintChoice InitPhase = "blueprint_choice"
+	InitPackChoice      InitPhase = "pack_choice" // legacy alias
+	InitDone            InitPhase = "done"
 )
 
 // InitFlowModel is the state machine for the /init onboarding flow.
 type InitFlowModel struct {
-	phase    InitPhase
-	apiKey   string
-	provider string
-	pack     string
+	phase     InitPhase
+	apiKey    string
+	provider  string
+	blueprint string
 
 	// Text input buffer for API key entry
 	keyInput []rune
@@ -58,10 +62,13 @@ func (f InitFlowModel) IsActive() bool {
 	return f.phase != InitIdle && f.phase != InitDone
 }
 
-// Start begins the init flow. API key → provider choice → pack choice → done.
+// Start begins the init flow. API key → provider choice → blueprint choice → done.
 func (f InitFlowModel) Start() (InitFlowModel, tea.Cmd) {
 	f.apiKey = strings.TrimSpace(config.ResolveAPIKey(""))
 	f.provider = config.ResolveLLMProvider("")
+	if cfg, err := config.Load(); err == nil {
+		f.blueprint = cfg.ActiveBlueprint()
+	}
 	if f.apiKey == "" {
 		f.phase = InitAPIKey
 		return f, f.emitPhase(InitAPIKey)
@@ -81,18 +88,21 @@ func (f InitFlowModel) Update(msg tea.Msg) (InitFlowModel, tea.Cmd) {
 		if v, ok := m.Data["provider"]; ok {
 			f.provider = v
 		}
-		if v, ok := m.Data["pack"]; ok {
-			f.pack = v
+		if v, ok := m.Data["blueprint"]; ok {
+			f.blueprint = v
+		}
+		if v, ok := m.Data["pack"]; ok && strings.TrimSpace(f.blueprint) == "" {
+			f.blueprint = v
 		}
 
 	case PickerSelectMsg:
 		switch f.phase {
 		case InitProviderChoice:
 			f.provider = m.Value
-			f.phase = InitPackChoice
-			return f, f.emitPhase(InitPackChoice)
-		case InitPackChoice:
-			f.pack = m.Value
+			f.phase = InitBlueprintChoice
+			return f, f.emitPhase(InitBlueprintChoice)
+		case InitBlueprintChoice, InitPackChoice:
+			f.blueprint = m.Value
 			return f.finish()
 		}
 
@@ -154,11 +164,8 @@ func (f InitFlowModel) finish() (InitFlowModel, tea.Cmd) {
 		cfg.APIKey = f.apiKey
 	}
 	cfg.LLMProvider = f.provider
-	cfg.Pack = f.pack
-
-	// Resolve team lead slug from pack
-	if p := agent.GetPack(f.pack); p != nil {
-		cfg.TeamLeadSlug = p.LeadSlug
+	if strings.TrimSpace(f.blueprint) != "" {
+		cfg.SetActiveBlueprint(f.blueprint)
 	}
 
 	_ = config.Save(cfg)
@@ -170,9 +177,10 @@ func (f InitFlowModel) finish() (InitFlowModel, tea.Cmd) {
 // emitPhase returns a tea.Cmd that emits an InitFlowMsg for the given phase.
 func (f InitFlowModel) emitPhase(phase InitPhase) tea.Cmd {
 	data := map[string]string{
-		"api_key":  f.apiKey,
-		"provider": f.provider,
-		"pack":     f.pack,
+		"api_key":   f.apiKey,
+		"provider":  f.provider,
+		"blueprint": f.blueprint,
+		"pack":      f.blueprint,
 	}
 	return func() tea.Msg {
 		return InitFlowMsg{Phase: string(phase), Data: data}
@@ -196,10 +204,39 @@ func ProviderOptions() []PickerOption {
 	return options
 }
 
-// PackOptions returns the picker options for agent pack selection.
-func PackOptions() []PickerOption {
-	options := make([]PickerOption, len(agent.Packs))
-	for i, p := range agent.Packs {
+// BlueprintOptions returns the picker options for operation blueprint selection.
+func BlueprintOptions() []PickerOption {
+	if repoRoot := resolveInitRepoRoot(); repoRoot != "" {
+		if blueprints, err := operations.ListBlueprints(repoRoot); err == nil && len(blueprints) > 0 {
+			options := make([]PickerOption, len(blueprints))
+			for i, bp := range blueprints {
+				label := bp.Name
+				if i == 0 {
+					label += " (default)"
+				}
+				desc := strings.TrimSpace(bp.Description)
+				if desc == "" {
+					desc = strings.TrimSpace(bp.Objective)
+				}
+				options[i] = PickerOption{
+					Label:       label,
+					Value:       bp.ID,
+					Description: desc,
+				}
+			}
+			return options
+		}
+	}
+	return legacyPackOptions()
+}
+
+// PackOptions is a legacy alias retained for compatibility with older callers.
+func PackOptions() []PickerOption { return BlueprintOptions() }
+
+func legacyPackOptions() []PickerOption {
+	packs := agent.ListLegacyPacks()
+	options := make([]PickerOption, len(packs))
+	for i, p := range packs {
 		label := p.Name
 		if i == 0 {
 			label += " (default)"
@@ -320,9 +357,9 @@ func (f InitFlowModel) readinessChecks() []initReadinessCheck {
 			Detail: providerRuntimeDetail(provider),
 		},
 		{
-			Label:  "Agent pack",
-			Status: packReadinessStatus(f.pack),
-			Detail: packReadinessDetail(f.pack),
+			Label:  "Operation template",
+			Status: blueprintReadinessStatus(f.blueprint),
+			Detail: blueprintReadinessDetail(f.blueprint),
 		},
 		{
 			Label:  "Integrations",
@@ -378,21 +415,20 @@ func apiKeyReadinessDetail(ok bool) string {
 	return "Paste your WUPHF/Nex API key to enable memory and managed integrations."
 }
 
-func packReadinessStatus(pack string) string {
-	if strings.TrimSpace(pack) == "" {
+func blueprintReadinessStatus(blueprint string) string {
+	if strings.TrimSpace(blueprint) == "" {
 		return "next"
 	}
 	return "ready"
 }
 
-func packReadinessDetail(pack string) string {
-	if p := agent.GetPack(strings.TrimSpace(pack)); p != nil {
-		return "Selected " + p.Name + "."
+func blueprintReadinessDetail(blueprint string) string {
+	if name := blueprintDisplayName(strings.TrimSpace(blueprint)); name != "" {
+		if strings.TrimSpace(blueprint) != "" {
+			return "Selected " + name + "."
+		}
 	}
-	if strings.TrimSpace(pack) != "" {
-		return "Selected " + pack + "."
-	}
-	return "Choose which team should open after setup."
+	return "Choose which operation template or blueprint should open after setup."
 }
 
 func providerRuntimeStatus(provider string) string {
@@ -441,15 +477,48 @@ func (f InitFlowModel) phaseText() (heading, instructions string) {
 		return "Enter Nex API Key", "Paste your WUPHF/Nex API key. WUPHF uses One for integrations and manages it automatically through your Nex identity."
 	case InitProviderChoice:
 		return "Choose LLM Provider", "Select your preferred AI provider. Integrations are handled automatically through Nex using One."
-	case InitPackChoice:
-		return "Choose Agent Pack", "Select the team of agents to work with."
+	case InitBlueprintChoice, InitPackChoice:
+		return "Choose Operation Template", "Select the blueprint or template that will seed your startup."
 	case InitDone:
-		packName := f.pack
-		if p := agent.GetPack(f.pack); p != nil {
-			packName = p.Name
-		}
-		return "Setup Complete", "Provider: " + f.provider + " | Pack: " + packName + ". " + config.OneSetupBlurb()
+		blueprintName := blueprintDisplayName(f.blueprint)
+		return "Setup Complete", "Provider: " + f.provider + " | Blueprint: " + blueprintName + ". " + config.OneSetupBlurb()
 	default:
 		return "Setup", "Run /init to begin."
+	}
+}
+
+func blueprintDisplayName(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if repoRoot := resolveInitRepoRoot(); repoRoot != "" {
+		if blueprint, err := operations.LoadBlueprint(repoRoot, id); err == nil {
+			if name := strings.TrimSpace(blueprint.Name); name != "" {
+				return name
+			}
+		}
+	}
+	return id
+}
+
+func resolveInitRepoRoot() string {
+	current, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	current = filepath.Clean(current)
+	for {
+		if _, err := os.Stat(filepath.Join(current, "go.mod")); err == nil {
+			return current
+		}
+		if _, err := os.Stat(filepath.Join(current, "templates")); err == nil {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ""
+		}
+		current = parent
 	}
 }

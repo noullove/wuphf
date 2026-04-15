@@ -16,8 +16,6 @@ import (
 
 // ── Onboarding state ────────────────────────────────────────────
 
-const brokerBaseURL = "http://127.0.0.1:7890"
-
 type onboardingStep int
 
 const (
@@ -181,15 +179,15 @@ type onboardingModel struct {
 	prereqs            []prereqResult
 	anthropicKey       simpleInput
 	openAIKey          simpleInput
-	keyFocus           int // 0=anthropic, 1=openai
+	keyFocus           int    // 0=anthropic, 1=openai
 	keyStatus          string // "idle", "checking", "valid", "invalid", "unverified"
 	prereqsOk          bool
 	continueUnverified bool
 
 	// Step 3
-	templates    []taskTemplate
-	selectedTpl  int // -1 = freeform
-	taskInput    simpleInput
+	templates   []taskTemplate
+	selectedTpl int // -1 = freeform
+	taskInput   simpleInput
 
 	// State
 	brokerURL string
@@ -417,7 +415,7 @@ func (m onboardingModel) handleTaskKey(msg tea.KeyMsg) (onboardingModel, tea.Cmd
 		s := msg.String()
 		// Number key: select template.
 		if len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
-			idx := int(s[0]-'1')
+			idx := int(s[0] - '1')
 			if idx < len(m.templates) {
 				m.selectedTpl = idx
 				return m, nil
@@ -537,10 +535,10 @@ func (m onboardingModel) viewSetup(w, h int) string {
 				}
 				statusStr = okStyle.Render("\u2713 "+p.Name) + dimStyle.Render(ver)
 			} else {
-				label := failStyle.Render("\u2717 "+p.Name)
+				label := failStyle.Render("\u2717 " + p.Name)
 				hint := ""
 				if p.InstallURL != "" {
-					hint = dimStyle.Render("  install at "+p.InstallURL)
+					hint = dimStyle.Render("  install at " + p.InstallURL)
 				}
 				req := ""
 				if p.Required {
@@ -618,7 +616,7 @@ func (m onboardingModel) viewTask(w, h int) string {
 		num := fmt.Sprintf("[%d]", i+1)
 		owner := ""
 		if tpl.OwnerSlug != "" {
-			owner = agentStyle.Render("  \u2192 "+tpl.OwnerSlug)
+			owner = agentStyle.Render("  \u2192 " + tpl.OwnerSlug)
 		}
 		label := fmt.Sprintf("%s %s%s", num, tpl.Title, owner)
 		if m.selectedTpl == i {
@@ -777,10 +775,10 @@ func (m onboardingModel) fetchTemplatesCmd() tea.Cmd {
 
 func defaultTemplates() []taskTemplate {
 	return []taskTemplate{
-		{ID: "landing-page", Title: "Draft the landing page", OwnerSlug: "eng"},
-		{ID: "repo-structure", Title: "Set up repo structure", OwnerSlug: "eng"},
-		{ID: "product-spec", Title: "Write the product spec", OwnerSlug: "pm"},
-		{ID: "readme", Title: "Write the README", OwnerSlug: "pm"},
+		{ID: "landing-page", Title: "Draft the landing page", OwnerSlug: "executor"},
+		{ID: "repo-structure", Title: "Set up repo structure", OwnerSlug: "executor"},
+		{ID: "product-spec", Title: "Write the product spec", OwnerSlug: "planner"},
+		{ID: "readme", Title: "Write the README", OwnerSlug: "planner"},
 		{ID: "competitive-audit", Title: "Audit the competition", OwnerSlug: "ceo"},
 	}
 }

@@ -190,9 +190,10 @@ func (s *AgentService) Create(cfg AgentConfig) (*ManagedAgent, error) {
 	return ma, nil
 }
 
-// CreateFromTemplate looks up a template by name, merges the slug, and calls Create.
+// CreateFromTemplate looks up a legacy compatibility template by name, merges
+// the slug, and calls Create.
 func (s *AgentService) CreateFromTemplate(slug, templateName string) (*ManagedAgent, error) {
-	tmpl, ok := Templates[templateName]
+	tmpl, ok := LookupLegacyTemplate(templateName)
 	if !ok {
 		return nil, fmt.Errorf("unknown template: %q", templateName)
 	}
@@ -425,20 +426,17 @@ func (s *AgentService) Subscribe(listener func()) func() {
 	}
 }
 
-// GetTemplateNames returns the names of all built-in templates, sorted.
+// GetTemplateNames returns the names of all legacy compatibility templates,
+// sorted.
 func (s *AgentService) GetTemplateNames() []string {
-	names := make([]string, 0, len(Templates))
-	for name := range Templates {
-		names = append(names, name)
-	}
+	names := LegacyTemplateNames()
 	sort.Strings(names)
 	return names
 }
 
-// GetTemplate returns the config for a named template.
+// GetTemplate returns the config for a named legacy compatibility template.
 func (s *AgentService) GetTemplate(name string) (AgentConfig, bool) {
-	cfg, ok := Templates[name]
-	return cfg, ok
+	return LookupLegacyTemplate(name)
 }
 
 // UpdateConfig updates mutable fields on a running agent's config.

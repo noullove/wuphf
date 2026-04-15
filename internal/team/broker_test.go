@@ -472,10 +472,62 @@ func TestNewBrokerSeedsDefaultOfficeRosterOnFreshState(t *testing.T) {
 	}
 }
 
+func TestNewBrokerSeedsBlueprintBackedOfficeRosterOnFreshState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	manifestPath := filepath.Join(home, ".wuphf", "company.json")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o700); err != nil {
+		t.Fatalf("mkdir manifest dir: %v", err)
+	}
+	raw := `{
+  "name": "Blueprint Office",
+  "description": "Refs only manifest",
+  "blueprint_refs": [
+    {"kind":"operation","id":"youtube-factory","source":"test"}
+  ]
+}`
+	if err := os.WriteFile(manifestPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	members := b.OfficeMembers()
+	if len(members) < 2 {
+		t.Fatalf("expected blueprint-backed default office roster, got %d members", len(members))
+	}
+	var foundResearch bool
+	for _, member := range members {
+		if member.Slug == "research-lead" {
+			foundResearch = true
+			break
+		}
+	}
+	if !foundResearch {
+		t.Fatalf("expected blueprint-backed office roster to include youtube starter members, got %+v", members)
+	}
+}
+
 func TestHandleMessagesSupportsInboxAndOutboxScopes(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	b := NewBroker()
+	b.mu.Lock()
+	b.members = append(b.members,
+		officeMember{Slug: "pm", Name: "Product Manager"},
+		officeMember{Slug: "fe", Name: "Frontend Engineer"},
+	)
+	for i := range b.channels {
+		if b.channels[i].Slug == "general" {
+			b.channels[i].Members = append(b.channels[i].Members, "pm", "fe")
+			break
+		}
+	}
+	b.mu.Unlock()
 	if err := b.StartOnPort(0); err != nil {
 		t.Fatalf("failed to start broker: %v", err)
 	}
@@ -1794,6 +1846,75 @@ func TestBrokerTaskCreateKeepsDistinctTasksInSameThread(t *testing.T) {
 	}
 }
 
+func TestBrokerTaskPlanAssignsWorktreeForLocalWorktreeTask(t *testing.T) {
+	oldPrepare := prepareTaskWorktree
+	oldCleanup := cleanupTaskWorktree
+	prepareTaskWorktree = func(taskID string) (string, string, error) {
+		return "/tmp/wuphf-task-" + taskID, "wuphf-" + taskID, nil
+	}
+	cleanupTaskWorktree = func(path, branch string) error { return nil }
+	defer func() {
+		prepareTaskWorktree = oldPrepare
+		cleanupTaskWorktree = oldCleanup
+	}()
+
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "operator", "Operator")
+	ensureTestMemberAccess(b, "general", "builder", "Builder")
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("failed to start broker: %v", err)
+	}
+	defer b.Stop()
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	body, _ := json.Marshal(map[string]any{
+		"channel":    "general",
+		"created_by": "operator",
+		"tasks": []map[string]any{
+			{
+				"title":          "Build intake dry-run review bundle",
+				"details":        "Produce the first dry-run consulting artifact bundle.",
+				"assignee":       "builder",
+				"task_type":      "feature",
+				"execution_mode": "local_worktree",
+			},
+		},
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/task-plan", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("task plan request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected status %d: %s", resp.StatusCode, raw)
+	}
+
+	var result struct {
+		Tasks []teamTask `json:"tasks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode task plan response: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("expected one task, got %+v", result.Tasks)
+	}
+	if result.Tasks[0].ExecutionMode != "local_worktree" {
+		t.Fatalf("expected local_worktree task, got %+v", result.Tasks[0])
+	}
+	if result.Tasks[0].WorktreePath == "" || result.Tasks[0].WorktreeBranch == "" {
+		t.Fatalf("expected task plan to assign worktree metadata, got %+v", result.Tasks[0])
+	}
+}
+
 func TestBrokerStoresLedgerAndReviewLifecycle(t *testing.T) {
 	oldPrepare := prepareTaskWorktree
 	oldCleanup := cleanupTaskWorktree
@@ -2044,6 +2165,245 @@ func TestBrokerApproveRetainsLocalWorktree(t *testing.T) {
 	}
 }
 
+func ensureTestMemberAccess(b *Broker, channel, slug, name string) {
+	if b == nil {
+		return
+	}
+	slug = normalizeChannelSlug(slug)
+	if slug == "" {
+		return
+	}
+	if existing := b.findMemberLocked(slug); existing == nil {
+		member := officeMember{Slug: slug, Name: name}
+		applyOfficeMemberDefaults(&member)
+		b.members = append(b.members, member)
+	}
+	for i := range b.channels {
+		if normalizeChannelSlug(b.channels[i].Slug) != normalizeChannelSlug(channel) {
+			continue
+		}
+		if !containsString(b.channels[i].Members, slug) {
+			b.channels[i].Members = append(b.channels[i].Members, slug)
+		}
+		return
+	}
+	b.channels = append(b.channels, teamChannel{
+		Slug:    normalizeChannelSlug(channel),
+		Name:    normalizeChannelSlug(channel),
+		Members: []string{slug},
+	})
+}
+
+func TestBrokerHandlePostTaskRejectsFalseReadOnlyBlockForWritableWorktree(t *testing.T) {
+	oldPrepare := prepareTaskWorktree
+	oldCleanup := cleanupTaskWorktree
+	oldVerify := verifyTaskWorktreeWritable
+	worktreeDir := t.TempDir()
+	prepareTaskWorktree = func(taskID string) (string, string, error) {
+		return worktreeDir, "wuphf-" + taskID, nil
+	}
+	cleanupTaskWorktree = func(path, branch string) error { return nil }
+	verifyTaskWorktreeWritable = func(path string) error {
+		if path != worktreeDir {
+			t.Fatalf("expected probe path %q, got %q", worktreeDir, path)
+		}
+		return nil
+	}
+	defer func() {
+		prepareTaskWorktree = oldPrepare
+		cleanupTaskWorktree = oldCleanup
+		verifyTaskWorktreeWritable = oldVerify
+	}()
+
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "eng", "Engineer")
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("failed to start broker: %v", err)
+	}
+	defer b.Stop()
+
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Implement the first runnable generator slice",
+		Owner:         "eng",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	body, _ := json.Marshal(map[string]any{
+		"action":     "block",
+		"channel":    "general",
+		"id":         task.ID,
+		"created_by": "eng",
+		"details":    "This turn is running in a read-only filesystem sandbox. Need a writable workspace.",
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/tasks", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post block task: %v", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 rejecting bogus workspace block, got %d: %s", resp.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), "assigned local worktree is writable") {
+		t.Fatalf("expected writable-worktree guidance, got %s", raw)
+	}
+
+	var updated teamTask
+	for _, candidate := range b.AllTasks() {
+		if candidate.ID == task.ID {
+			updated = candidate
+			break
+		}
+	}
+	if updated.ID == "" {
+		t.Fatalf("expected to find task %s", task.ID)
+	}
+	if updated.Status != "in_progress" || updated.Blocked {
+		t.Fatalf("expected task to remain active after rejected block, got %+v", updated)
+	}
+	if strings.Contains(strings.ToLower(updated.Details), "read-only") {
+		t.Fatalf("expected false read-only detail to stay out of task state, got %+v", updated)
+	}
+}
+
+func TestBrokerBlockTaskRejectsFalseReadOnlyBlockForWritableWorktree(t *testing.T) {
+	oldPrepare := prepareTaskWorktree
+	oldCleanup := cleanupTaskWorktree
+	oldVerify := verifyTaskWorktreeWritable
+	worktreeDir := t.TempDir()
+	prepareTaskWorktree = func(taskID string) (string, string, error) {
+		return worktreeDir, "wuphf-" + taskID, nil
+	}
+	cleanupTaskWorktree = func(path, branch string) error { return nil }
+	verifyTaskWorktreeWritable = func(path string) error {
+		if path != worktreeDir {
+			t.Fatalf("expected probe path %q, got %q", worktreeDir, path)
+		}
+		return nil
+	}
+	defer func() {
+		prepareTaskWorktree = oldPrepare
+		cleanupTaskWorktree = oldCleanup
+		verifyTaskWorktreeWritable = oldVerify
+	}()
+
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Implement the first runnable generator slice",
+		Owner:         "eng",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+
+	got, changed, err := b.BlockTask(task.ID, "eng", "Need writable workspace because the filesystem sandbox is read-only.")
+	if err == nil {
+		t.Fatal("expected false read-only block to be rejected")
+	}
+	if changed {
+		t.Fatalf("expected no task state change on rejected block, got %+v", got)
+	}
+	if !strings.Contains(err.Error(), "assigned local worktree is writable") {
+		t.Fatalf("expected writable-worktree guidance, got %v", err)
+	}
+
+	var updated teamTask
+	for _, candidate := range b.AllTasks() {
+		if candidate.ID == task.ID {
+			updated = candidate
+			break
+		}
+	}
+	if updated.ID == "" {
+		t.Fatalf("expected to find task %s", task.ID)
+	}
+	if updated.Status != "in_progress" || updated.Blocked {
+		t.Fatalf("expected task to remain active after rejected block, got %+v", updated)
+	}
+	if strings.Contains(strings.ToLower(updated.Details), "read-only") {
+		t.Fatalf("expected false read-only detail to stay out of task state, got %+v", updated)
+	}
+}
+
+func TestBrokerBlockTaskAllowsReadOnlyBlockWhenWriteProbeFails(t *testing.T) {
+	oldPrepare := prepareTaskWorktree
+	oldCleanup := cleanupTaskWorktree
+	oldVerify := verifyTaskWorktreeWritable
+	worktreeDir := t.TempDir()
+	prepareTaskWorktree = func(taskID string) (string, string, error) {
+		return worktreeDir, "wuphf-" + taskID, nil
+	}
+	cleanupTaskWorktree = func(path, branch string) error { return nil }
+	verifyTaskWorktreeWritable = func(path string) error {
+		if path != worktreeDir {
+			t.Fatalf("expected probe path %q, got %q", worktreeDir, path)
+		}
+		return fmt.Errorf("permission denied")
+	}
+	defer func() {
+		prepareTaskWorktree = oldPrepare
+		cleanupTaskWorktree = oldCleanup
+		verifyTaskWorktreeWritable = oldVerify
+	}()
+
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Implement the first runnable generator slice",
+		Owner:         "eng",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+
+	got, changed, err := b.BlockTask(task.ID, "eng", "Need writable workspace because the filesystem sandbox is read-only.")
+	if err != nil {
+		t.Fatalf("expected real write failure blocker to pass through, got %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected task state change on real blocker, got %+v", got)
+	}
+	if got.Status != "blocked" || !got.Blocked {
+		t.Fatalf("expected blocked task result, got %+v", got)
+	}
+	if !strings.Contains(got.Details, "read-only") {
+		t.Fatalf("expected block reason to persist, got %+v", got)
+	}
+}
+
 func TestBrokerCompleteClosesReviewTaskAndUnblocksDependents(t *testing.T) {
 	oldPrepare := prepareTaskWorktree
 	oldCleanup := cleanupTaskWorktree
@@ -2062,6 +2422,7 @@ func TestBrokerCompleteClosesReviewTaskAndUnblocksDependents(t *testing.T) {
 	defer func() { brokerStatePath = oldPathFn }()
 
 	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "eng", "Engineer")
 	if err := b.StartOnPort(0); err != nil {
 		t.Fatalf("failed to start broker: %v", err)
 	}
@@ -2153,6 +2514,113 @@ func TestBrokerCompleteClosesReviewTaskAndUnblocksDependents(t *testing.T) {
 	}
 }
 
+func TestBrokerCreateTaskReusesCompletedDependencyWorktree(t *testing.T) {
+	oldPrepare := prepareTaskWorktree
+	oldCleanup := cleanupTaskWorktree
+	var prepareCalls []string
+	prepareTaskWorktree = func(taskID string) (string, string, error) {
+		prepareCalls = append(prepareCalls, taskID)
+		if len(prepareCalls) > 1 {
+			return "", "", fmt.Errorf("unexpected prepareTaskWorktree call for %s", taskID)
+		}
+		return "/tmp/wuphf-task-" + taskID, "wuphf-" + taskID, nil
+	}
+	cleanupTaskWorktree = func(path, branch string) error { return nil }
+	defer func() {
+		prepareTaskWorktree = oldPrepare
+		cleanupTaskWorktree = oldCleanup
+	}()
+
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "builder", "Builder")
+	ensureTestMemberAccess(b, "general", "operator", "Operator")
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("failed to start broker: %v", err)
+	}
+	defer b.Stop()
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	post := func(payload map[string]any) teamTask {
+		body, _ := json.Marshal(payload)
+		req, _ := http.NewRequest(http.MethodPost, base+"/tasks", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+b.Token())
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("task post failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Fatalf("unexpected status %d: %s", resp.StatusCode, raw)
+		}
+		var result struct {
+			Task teamTask `json:"task"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("decode task response: %v", err)
+		}
+		return result.Task
+	}
+
+	first := post(map[string]any{
+		"action":         "create",
+		"title":          "Ship the dry-run approval packet generator",
+		"details":        "Initial consulting delivery slice",
+		"created_by":     "operator",
+		"owner":          "builder",
+		"thread_id":      "msg-1",
+		"execution_mode": "local_worktree",
+		"task_type":      "feature",
+	})
+	if first.WorktreePath == "" || first.WorktreeBranch == "" {
+		t.Fatalf("expected first task worktree metadata, got %+v", first)
+	}
+
+	reviewReady := post(map[string]any{
+		"action":     "complete",
+		"channel":    "general",
+		"id":         first.ID,
+		"created_by": "builder",
+	})
+	if reviewReady.Status != "review" || reviewReady.ReviewState != "ready_for_review" {
+		t.Fatalf("expected first complete to move task into review, got %+v", reviewReady)
+	}
+
+	approved := post(map[string]any{
+		"action":     "approve",
+		"channel":    "general",
+		"id":         first.ID,
+		"created_by": "operator",
+	})
+	if approved.Status != "done" || approved.ReviewState != "approved" {
+		t.Fatalf("expected approve to close task, got %+v", approved)
+	}
+
+	second := post(map[string]any{
+		"action":         "create",
+		"title":          "Render the approval packet into a reviewable dry-run bundle",
+		"details":        "Reuse the existing generator worktree",
+		"created_by":     "operator",
+		"owner":          "builder",
+		"thread_id":      "msg-2",
+		"execution_mode": "local_worktree",
+		"task_type":      "feature",
+		"depends_on":     []string{first.ID},
+	})
+	if second.WorktreePath != first.WorktreePath || second.WorktreeBranch != first.WorktreeBranch {
+		t.Fatalf("expected dependent task to reuse worktree %s/%s, got %+v", first.WorktreePath, first.WorktreeBranch, second)
+	}
+	if got := len(prepareCalls); got != 1 {
+		t.Fatalf("expected one worktree prepare call, got %d (%v)", got, prepareCalls)
+	}
+}
+
 func TestBrokerCompleteAlreadyDoneTaskStaysApproved(t *testing.T) {
 	oldPrepare := prepareTaskWorktree
 	oldCleanup := cleanupTaskWorktree
@@ -2171,6 +2639,7 @@ func TestBrokerCompleteAlreadyDoneTaskStaysApproved(t *testing.T) {
 	defer func() { brokerStatePath = oldPathFn }()
 
 	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "eng", "Engineer")
 	if err := b.StartOnPort(0); err != nil {
 		t.Fatalf("failed to start broker: %v", err)
 	}
@@ -3235,6 +3704,37 @@ func TestParseSkillProposalCreatesNonBlockingInterview(t *testing.T) {
 	}
 }
 
+func TestParseSkillProposalParsesMultipleBlocks(t *testing.T) {
+	b := &Broker{}
+	b.members = []officeMember{{Slug: "ceo", Name: "CEO", Role: "lead"}}
+	b.channels = []teamChannel{{Slug: "general", Members: []string{"ceo"}}}
+	msg := channelMessage{
+		From:    "ceo",
+		Channel: "general",
+		Content: strings.Join([]string{
+			"Integration bundle follows.",
+			skillProposalContent("gmail-dry-run-harness", "Gmail Dry-Run Harness"),
+			skillProposalContent("youtube-data-publish-dry-run", "YouTube Data Publish Dry-Run"),
+			skillProposalContent("drive-asset-stage-dry-run", "Drive Asset Stage Dry-Run"),
+		}, "\n\n"),
+	}
+
+	b.parseSkillProposalLocked(msg)
+
+	if len(b.skills) != 3 {
+		t.Fatalf("expected 3 skills from one CEO message, got %d", len(b.skills))
+	}
+	if len(b.requests) != 3 {
+		t.Fatalf("expected 3 interview requests from one CEO message, got %d", len(b.requests))
+	}
+	if got := b.skills[0].Name; got != "gmail-dry-run-harness" {
+		t.Fatalf("unexpected first skill slug: %q", got)
+	}
+	if got := b.skills[2].Name; got != "drive-asset-stage-dry-run" {
+		t.Fatalf("unexpected third skill slug: %q", got)
+	}
+}
+
 // Test 7: Answering "accept" via HTTP activates the skill.
 func TestSkillProposalAcceptCallbackActivatesSkill(t *testing.T) {
 	oldPathFn := brokerStatePath
@@ -3362,7 +3862,62 @@ func TestSkillProposalRejectCallbackArchivesSkill(t *testing.T) {
 	}
 }
 
-// Test 9: buildPrompt for the lead includes SKILL & AGENT AWARENESS section.
+func TestInvokeSkillTracksInvokerChannelAndExecutionMetadata(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	b.mu.Lock()
+	b.skills = append(b.skills, teamSkill{
+		ID:        "skill-youtube-factory-bootstrap",
+		Name:      "youtube-factory-bootstrap",
+		Title:     "Bootstrap Automated YouTube Factory",
+		Status:    "active",
+		Channel:   "general",
+		CreatedBy: "ceo",
+	})
+	b.channels = append(b.channels, teamChannel{
+		Slug:    "youtube-factory",
+		Name:    "YouTube Factory",
+		Members: []string{"ceo", "ops"},
+	})
+	b.mu.Unlock()
+
+	body := bytes.NewBufferString(`{"name":"youtube-factory-bootstrap","invoked_by":"you","channel":"youtube-factory"}`)
+	req := httptest.NewRequest(http.MethodPost, "/skills/youtube-factory-bootstrap/invoke", body)
+	rec := httptest.NewRecorder()
+
+	b.handleInvokeSkill(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.skills[0].UsageCount != 1 {
+		t.Fatalf("expected usage count 1, got %d", b.skills[0].UsageCount)
+	}
+	if b.skills[0].LastExecutionStatus != "invoked" {
+		t.Fatalf("expected last execution status invoked, got %q", b.skills[0].LastExecutionStatus)
+	}
+	if b.skills[0].LastExecutionAt == "" {
+		t.Fatal("expected last execution timestamp to be set")
+	}
+	last := b.messages[len(b.messages)-1]
+	if last.Channel != "youtube-factory" {
+		t.Fatalf("expected invocation message in youtube-factory, got %q", last.Channel)
+	}
+	if last.From != "you" {
+		t.Fatalf("expected invocation from you, got %q", last.From)
+	}
+	if !strings.Contains(last.Content, "@you") {
+		t.Fatalf("expected invocation content to reference @you, got %q", last.Content)
+	}
+}
+
+// Test 10: buildPrompt for the lead includes SKILL & AGENT AWARENESS section.
 func TestBuildPromptLeadIncludesSkillAwareness(t *testing.T) {
 	l := &Launcher{
 		pack: &agent.PackDefinition{

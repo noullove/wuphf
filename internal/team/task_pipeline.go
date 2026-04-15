@@ -56,18 +56,13 @@ func taskNeedsStructuredReview(task *teamTask) bool {
 	if !template.ReviewRequired {
 		return false
 	}
-	switch strings.TrimSpace(strings.ToLower(task.Owner)) {
-	case "eng", "fe", "be", "ai":
-		return true
-	default:
-		return false
-	}
+	return taskWorkRequiresLocalExecution(task.Owner, task.Title, task.Details)
 }
 
-func taskDefaultExecutionMode(owner, taskType string) string {
-	switch strings.TrimSpace(strings.ToLower(owner)) {
-	case "eng", "fe", "be", "ai":
-		if taskType == "feature" || taskType == "bugfix" || taskType == "incident" {
+func taskDefaultExecutionMode(owner, taskType, title, details string) string {
+	switch strings.TrimSpace(strings.ToLower(taskType)) {
+	case "feature", "bugfix", "incident":
+		if taskWorkRequiresLocalExecution(owner, title, details) {
 			return "local_worktree"
 		}
 	}
@@ -99,7 +94,7 @@ func normalizeTaskPlan(task *teamTask) {
 		task.PipelineID = task.TaskType
 	}
 	if strings.TrimSpace(task.ExecutionMode) == "" {
-		task.ExecutionMode = taskDefaultExecutionMode(task.Owner, task.TaskType)
+		task.ExecutionMode = taskDefaultExecutionMode(task.Owner, task.TaskType, task.Title, task.Details)
 	}
 	if strings.TrimSpace(task.ReviewState) == "" {
 		if taskNeedsStructuredReview(task) {
@@ -124,4 +119,50 @@ func containsAnyTaskFragment(text string, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+func taskWorkRequiresLocalExecution(owner, title, details string) bool {
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{owner, title, details}, " ")))
+	return containsAnyTaskFragment(text,
+		"eng", "engineer", "developer",
+		"repo", "repository", "worktree", "workspace", "filesystem",
+		"code", "coding", "implement", "build", "ship",
+		"frontend", "backend", "api", "database", "schema", "migration",
+		"bug", "fix", "panic", "crash", "compile", "test",
+	)
+}
+
+func taskRequiresRealExternalExecution(task *teamTask) bool {
+	if task == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{task.Owner, task.Title, task.Details}, " ")))
+	if text == "" {
+		return false
+	}
+	if containsAnyTaskFragment(text,
+		"mock preview", "preview only", "stub only",
+		"local-only", "local only", "repo-only", "repo only",
+		"no live write", "no external write", "do not post", "don't post",
+		"do not create remotely", "don't create remotely",
+	) {
+		return false
+	}
+	if !containsAnyTaskFragment(text,
+		"slack", "notion", "google drive", "drive", "discord",
+		"calendar", "crm", "hubspot", "salesforce", "airtable",
+		"linear", "jira", "confluence", "integration", "connected account",
+		"external system", "external tool", "external workflow", "one action",
+	) {
+		return false
+	}
+	return containsAnyTaskFragment(text,
+		"post", "create", "write", "publish", "send", "join", "search",
+		"query", "read", "fetch", "sync", "run", "execute", "trigger",
+		"handoff", "proof artifact", "page", "doc", "document", "message",
+		"database", "workflow", "fan-out", "fanout",
+	)
 }

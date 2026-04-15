@@ -14,18 +14,20 @@ import (
 
 // Config mirrors ~/.wuphf/config.json.
 type Config struct {
-	APIKey              string `json:"api_key,omitempty"`
-	OneAPIKey           string `json:"one_api_key,omitempty"`
-	ComposioAPIKey      string `json:"composio_api_key,omitempty"`
-	ActionProvider      string `json:"action_provider,omitempty"`
-	Email               string `json:"email,omitempty"`
-	WorkspaceID         string `json:"workspace_id,omitempty"`
-	WorkspaceSlug       string `json:"workspace_slug,omitempty"`
-	LLMProvider         string `json:"llm_provider,omitempty"`
-	GeminiAPIKey        string `json:"gemini_api_key,omitempty"`
-	AnthropicAPIKey     string `json:"anthropic_api_key,omitempty"`
-	OpenAIAPIKey        string `json:"openai_api_key,omitempty"`
-	MinimaxAPIKey       string `json:"minimax_api_key,omitempty"`
+	APIKey          string `json:"api_key,omitempty"`
+	OneAPIKey       string `json:"one_api_key,omitempty"`
+	ComposioAPIKey  string `json:"composio_api_key,omitempty"`
+	ActionProvider  string `json:"action_provider,omitempty"`
+	Email           string `json:"email,omitempty"`
+	WorkspaceID     string `json:"workspace_id,omitempty"`
+	WorkspaceSlug   string `json:"workspace_slug,omitempty"`
+	LLMProvider     string `json:"llm_provider,omitempty"`
+	GeminiAPIKey    string `json:"gemini_api_key,omitempty"`
+	AnthropicAPIKey string `json:"anthropic_api_key,omitempty"`
+	OpenAIAPIKey    string `json:"openai_api_key,omitempty"`
+	MinimaxAPIKey   string `json:"minimax_api_key,omitempty"`
+	Blueprint       string `json:"blueprint,omitempty"`
+	// Pack is retained as a legacy alias for the active operation blueprint/template.
 	Pack                string `json:"pack,omitempty"`
 	TeamLeadSlug        string `json:"team_lead_slug,omitempty"`
 	MaxConcurrent       int    `json:"max_concurrent_agents,omitempty"`
@@ -42,6 +44,22 @@ type Config struct {
 	CompanyGoals        string `json:"company_goals,omitempty"`
 	CompanySize         string `json:"company_size,omitempty"`
 	CompanyPriority     string `json:"company_priority,omitempty"`
+}
+
+// ActiveBlueprint returns the preferred operation blueprint/template id.
+// Blueprint is the primary field; Pack remains as a compatibility alias.
+func (c Config) ActiveBlueprint() string {
+	if v := strings.TrimSpace(c.Blueprint); v != "" {
+		return v
+	}
+	return strings.TrimSpace(c.Pack)
+}
+
+// SetActiveBlueprint stores the selected operation blueprint/template id in
+// the preferred field. The legacy Pack alias is retained for reads only.
+func (c *Config) SetActiveBlueprint(id string) {
+	id = strings.TrimSpace(id)
+	c.Blueprint = id
 }
 
 // ConfigPath returns the absolute path to ~/.wuphf/config.json, with a legacy

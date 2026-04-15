@@ -70,7 +70,7 @@ func TestRegisterAllCommands(t *testing.T) {
 	RegisterAllCommands(r)
 
 	expected := []string{
-		"ask", "search", "remember",
+		"ask", "search", "remember", "youtube-pack",
 		"object", "record", "note", "task", "list", "rel", "attribute",
 		"agent", "graph", "insights", "calendar", "chat",
 		"config", "detect", "init", "provider",

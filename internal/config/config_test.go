@@ -43,6 +43,7 @@ func TestRoundtrip(t *testing.T) {
 			AnthropicAPIKey:    "anthropic-key",
 			OpenAIAPIKey:       "openai-key",
 			MinimaxAPIKey:      "minimax-key",
+			Blueprint:          "niche-crm",
 			DefaultFormat:      "json",
 			DefaultTimeout:     30_000,
 			DevURL:             "http://localhost:3000",
@@ -63,6 +64,31 @@ func TestRoundtrip(t *testing.T) {
 			t.Fatalf("roundtrip mismatch:\n  got:  %+v\n  want: %+v", out, in)
 		}
 	})
+}
+
+func TestActiveBlueprintPrefersBlueprintField(t *testing.T) {
+	cfg := Config{Blueprint: "template-blueprint", Pack: "legacy-pack"}
+	if got := cfg.ActiveBlueprint(); got != "template-blueprint" {
+		t.Fatalf("expected blueprint field to win, got %q", got)
+	}
+}
+
+func TestSetActiveBlueprintDoesNotBackfillLegacyPack(t *testing.T) {
+	cfg := Config{Pack: "legacy-pack"}
+	cfg.SetActiveBlueprint("template-blueprint")
+	if got := cfg.Blueprint; got != "template-blueprint" {
+		t.Fatalf("expected preferred blueprint field to be set, got %q", got)
+	}
+	if got := cfg.Pack; got != "legacy-pack" {
+		t.Fatalf("expected legacy pack field to remain unchanged, got %q", got)
+	}
+}
+
+func TestActiveBlueprintFallsBackToPack(t *testing.T) {
+	cfg := Config{Pack: "legacy-pack"}
+	if got := cfg.ActiveBlueprint(); got != "legacy-pack" {
+		t.Fatalf("expected pack fallback, got %q", got)
+	}
 }
 
 func TestSaveCreatesParentDirs(t *testing.T) {

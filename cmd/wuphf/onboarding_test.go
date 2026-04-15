@@ -7,7 +7,7 @@ import (
 )
 
 func TestOnboardingModelInit(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 	if m.step != stepWelcome {
 		t.Fatalf("expected stepWelcome, got %d", m.step)
 	}
@@ -17,7 +17,7 @@ func TestOnboardingModelInit(t *testing.T) {
 }
 
 func TestOnboardingModelStepAdvance(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 
 	// Populate step 1 inputs.
 	m.companyInput.SetValue("Dunder Mifflin")
@@ -37,7 +37,7 @@ func TestOnboardingModelStepAdvance(t *testing.T) {
 }
 
 func TestOnboardingModelStepAdvanceRequiresCompanyName(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 
 	// Leave company name empty.
 	m.descInput.SetValue("Paper company")
@@ -55,7 +55,7 @@ func TestOnboardingModelStepAdvanceRequiresCompanyName(t *testing.T) {
 }
 
 func TestOnboardingModelPrereqBlock(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 	m.step = stepSetup
 
 	// Inject failing prereqs.
@@ -80,7 +80,7 @@ func TestOnboardingModelPrereqBlock(t *testing.T) {
 }
 
 func TestOnboardingModelPrereqBypassWithC(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 	m.step = stepSetup
 	m.prereqs = []prereqResult{
 		{Name: "git", Required: true, Found: false},
@@ -105,7 +105,7 @@ func TestOnboardingModelPrereqBypassWithC(t *testing.T) {
 }
 
 func TestOnboardingModelComplete(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 	m.step = stepTask
 
 	// Inject completeMsg directly.
@@ -121,7 +121,7 @@ func TestOnboardingModelComplete(t *testing.T) {
 }
 
 func TestOnboardingModelCompleteWithError(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 	m.step = stepTask
 
 	updated, _ := m.Update(completeMsg{err: errOnboarding("broker rejected")})
@@ -136,7 +136,7 @@ func TestOnboardingModelCompleteWithError(t *testing.T) {
 }
 
 func TestOnboardingModelWindowResize(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m2 := updated.(onboardingModel)
 
@@ -146,7 +146,7 @@ func TestOnboardingModelWindowResize(t *testing.T) {
 }
 
 func TestOnboardingModelKeyValidatedMsg(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 	m.step = stepSetup
 	m.keyStatus = "checking"
 
@@ -158,7 +158,7 @@ func TestOnboardingModelKeyValidatedMsg(t *testing.T) {
 }
 
 func TestOnboardingModelPrereqsLoaded(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 	m.step = stepSetup
 
 	prereqs := []prereqResult{
@@ -177,7 +177,7 @@ func TestOnboardingModelPrereqsLoaded(t *testing.T) {
 }
 
 func TestOnboardingModelTemplatesLoaded(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 	m.step = stepTask
 
 	templates := []taskTemplate{
@@ -192,7 +192,7 @@ func TestOnboardingModelTemplatesLoaded(t *testing.T) {
 }
 
 func TestOnboardingModelView(t *testing.T) {
-	m := newOnboardingModel(brokerBaseURL, 80, 24)
+	m := newOnboardingModel(brokerBaseURL(), 80, 24)
 	v := m.View()
 	if v == "" {
 		t.Fatal("View() should return non-empty string")

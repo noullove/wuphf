@@ -234,6 +234,7 @@ func (l *Launcher) buildHeadlessClaudeEnv(slug string) []string {
 	env = append(env,
 		"WUPHF_AGENT_SLUG="+slug,
 		"WUPHF_BROKER_TOKEN="+l.broker.Token(),
+		"WUPHF_BROKER_BASE_URL="+l.BrokerBaseURL(),
 		"WUPHF_HEADLESS_PROVIDER=claude",
 		fmt.Sprintf("WUPHF_NO_NEX=%t", config.ResolveNoNex()),
 		"ANTHROPIC_PROMPT_CACHING=1",

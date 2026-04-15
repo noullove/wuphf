@@ -1,6 +1,10 @@
 package onboarding
 
-import "testing"
+import (
+	"path/filepath"
+	"runtime"
+	"testing"
+)
 
 func TestDefaultTemplatesReturnsFiveItems(t *testing.T) {
 	templates := DefaultTemplates()
@@ -37,16 +41,16 @@ func TestDefaultTemplatesExpectedIDs(t *testing.T) {
 }
 
 func TestDefaultTemplatesOwnerSlugs(t *testing.T) {
-	// Verify the expected owner distribution: eng×2, pm×2, ceo×1.
+	// Verify the expected owner distribution: executor×2, planner×2, ceo×1.
 	counts := map[string]int{}
 	for _, tmpl := range DefaultTemplates() {
 		counts[tmpl.OwnerSlug]++
 	}
-	if counts["eng"] != 2 {
-		t.Errorf("expected 2 eng templates, got %d", counts["eng"])
+	if counts["executor"] != 2 {
+		t.Errorf("expected 2 executor templates, got %d", counts["executor"])
 	}
-	if counts["pm"] != 2 {
-		t.Errorf("expected 2 pm templates, got %d", counts["pm"])
+	if counts["planner"] != 2 {
+		t.Errorf("expected 2 planner templates, got %d", counts["planner"])
 	}
 	if counts["ceo"] != 1 {
 		t.Errorf("expected 1 ceo template, got %d", counts["ceo"])
@@ -114,4 +118,27 @@ func TestTemplatesForPackRouting(t *testing.T) {
 			t.Errorf("TemplatesForPack(%q): first ID got %q, want %q", tc.slug, got[0].ID, tc.firstID)
 		}
 	}
+}
+
+func TestTemplatesForSelectionUsesOperationBlueprintStarterTasks(t *testing.T) {
+	repoRoot := onboardingTestRepoRoot(t)
+	got := TemplatesForSelection(repoRoot, "multi-agent-workflow-consulting")
+	if len(got) == 0 {
+		t.Fatal("expected blueprint-backed onboarding templates")
+	}
+	if got[0].Title != "Turn the directive into a client operating plan" {
+		t.Fatalf("unexpected first blueprint-backed template: %+v", got[0])
+	}
+	if got[0].OwnerSlug != "planner" {
+		t.Fatalf("expected planner-owned starter template, got %+v", got[0])
+	}
+}
+
+func onboardingTestRepoRoot(t *testing.T) string {
+	t.Helper()
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime caller failed")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
 }

@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,10 +29,12 @@ import (
 
 	"github.com/nex-crm/wuphf/internal/action"
 	"github.com/nex-crm/wuphf/internal/agent"
+	"github.com/nex-crm/wuphf/internal/brokeraddr"
 	"github.com/nex-crm/wuphf/internal/calendar"
 	"github.com/nex-crm/wuphf/internal/company"
 	"github.com/nex-crm/wuphf/internal/config"
 	"github.com/nex-crm/wuphf/internal/nex"
+	"github.com/nex-crm/wuphf/internal/operations"
 	"github.com/nex-crm/wuphf/internal/provider"
 	"github.com/nex-crm/wuphf/internal/setup"
 )
@@ -92,35 +93,55 @@ func (l *Launcher) SetOneOnOne(slug string) {
 	l.oneOnOne = NormalizeOneOnOneAgent(slug)
 }
 
-// NewLauncher creates a launcher for the given pack.
+// NewLauncher creates a launcher for the given operation blueprint or legacy pack.
 func NewLauncher(packSlug string) (*Launcher, error) {
 	cfg, _ := config.Load()
 	explicitPack := packSlug != "" // true when user passed --pack explicitly
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	repoRoot := resolveRepoRoot(cwd)
 	if packSlug == "" {
-		packSlug = cfg.Pack
+		packSlug = cfg.ActiveBlueprint()
 		if packSlug == "" {
-			packSlug = "founding-team"
+			if manifest, err := company.LoadManifest(); err == nil {
+				if refs := manifest.BlueprintRefsByKind("operation"); len(refs) > 0 {
+					packSlug = refs[0].ID
+				}
+			}
 		}
 	}
 
-	pack := agent.GetPack(packSlug)
-	if pack == nil {
-		return nil, fmt.Errorf("unknown pack: %s", packSlug)
+	operationTemplateExists := false
+	if strings.TrimSpace(packSlug) != "" {
+		if _, err := operations.LoadBlueprint(repoRoot, packSlug); err == nil {
+			operationTemplateExists = true
+		}
+	}
+	var pack *agent.PackDefinition
+	if !operationTemplateExists {
+		pack = agent.GetPack(packSlug)
+	}
+	if pack == nil && strings.TrimSpace(packSlug) != "" && !operationTemplateExists {
+		return nil, fmt.Errorf("unknown pack or operation blueprint: %s", packSlug)
 	}
 
 	// --pack is authoritative: when explicitly provided, reset company.json to
 	// match the pack so the broker doesn't silently load stale members.
 	if explicitPack {
-		if err := resetManifestToPack(pack); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: save pack config: %v\n", err)
+		var err error
+		switch {
+		case operationTemplateExists:
+			err = resetManifestToOperationBlueprint(repoRoot, packSlug)
+		case pack != nil:
+			err = resetManifestToPack(pack)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: save blueprint/pack config: %v\n", err)
 		}
 		// Drop stale broker state so the new pack starts clean.
 		_ = os.Remove(brokerStatePath())
-	}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
 	}
 	sessionMode, oneOnOne := loadRunningSessionMode()
 
@@ -204,6 +225,7 @@ func (l *Launcher) Launch() error {
 	// Pass broker token via env so channel view + agents can authenticate
 	channelEnv := []string{
 		fmt.Sprintf("WUPHF_BROKER_TOKEN=%s", l.broker.Token()),
+		fmt.Sprintf("WUPHF_BROKER_BASE_URL=%s", l.BrokerBaseURL()),
 	}
 	if l.isOneOnOne() {
 		channelEnv = append(channelEnv,
@@ -298,6 +320,7 @@ func (l *Launcher) Launch() error {
 	go l.notifyAgentsLoop()
 	if !l.isOneOnOne() {
 		go l.notifyTaskActionsLoop()
+		go l.notifyOfficeChangesLoop()
 		go l.pollNexNotificationsLoop()
 		go l.watchdogSchedulerLoop()
 	}
@@ -350,6 +373,118 @@ func (l *Launcher) notifyTaskActionsLoop() {
 			continue
 		}
 		l.deliverTaskNotification(action, task)
+	}
+}
+
+func (l *Launcher) notifyOfficeChangesLoop() {
+	if l.broker == nil {
+		return
+	}
+	changes, unsubscribe := l.broker.SubscribeOfficeChanges(128)
+	defer unsubscribe()
+
+	for evt := range changes {
+		if l.broker.HasPendingInterview() {
+			continue
+		}
+		l.deliverOfficeChangeNotification(evt)
+	}
+}
+
+type officeChangeTaskNotification struct {
+	Target  notificationTarget
+	Action  officeActionLog
+	Task    teamTask
+	Content string
+}
+
+func (l *Launcher) deliverOfficeChangeNotification(evt officeChangeEvent) {
+	for _, notification := range l.officeChangeTaskNotifications(evt) {
+		l.sendTaskUpdate(notification.Target, notification.Action, notification.Task, notification.Content)
+	}
+}
+
+func (l *Launcher) officeChangeTaskNotifications(evt officeChangeEvent) []officeChangeTaskNotification {
+	if l == nil || l.broker == nil {
+		return nil
+	}
+
+	kind := strings.TrimSpace(evt.Kind)
+	slug := normalizeChannelSlug(evt.Slug)
+	switch kind {
+	case "member_created", "channel_created", "channel_updated":
+	default:
+		return nil
+	}
+
+	targetMap := l.agentPaneTargets()
+	if len(targetMap) == 0 {
+		return nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	seen := make(map[string]struct{})
+	var out []officeChangeTaskNotification
+	for _, task := range l.broker.AllTasks() {
+		owner := strings.TrimSpace(task.Owner)
+		if owner == "" {
+			continue
+		}
+		if !shouldBackfillTaskOwner(kind, slug, task) {
+			continue
+		}
+		enabled := false
+		for _, member := range l.broker.EnabledMembers(task.Channel) {
+			if member == owner {
+				enabled = true
+				break
+			}
+		}
+		if !enabled {
+			continue
+		}
+		target, ok := targetMap[owner]
+		if !ok {
+			continue
+		}
+		key := owner + ":" + task.ID
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		action := officeActionLog{
+			Kind:      "task_updated",
+			Source:    "office",
+			Channel:   normalizeChannelSlug(task.Channel),
+			Actor:     "system",
+			RelatedID: task.ID,
+			CreatedAt: now,
+		}
+		out = append(out, officeChangeTaskNotification{
+			Target:  target,
+			Action:  action,
+			Task:    task,
+			Content: l.taskNotificationContent(action, task),
+		})
+	}
+	return out
+}
+
+func shouldBackfillTaskOwner(kind, slug string, task teamTask) bool {
+	status := strings.ToLower(strings.TrimSpace(task.Status))
+	if status == "done" || status == "canceled" || status == "cancelled" || status == "review" {
+		return false
+	}
+	if task.Blocked {
+		return false
+	}
+	switch kind {
+	case "member_created":
+		return strings.TrimSpace(task.Owner) == slug
+	case "channel_created", "channel_updated":
+		return normalizeChannelSlug(task.Channel) == slug
+	default:
+		return false
 	}
 }
 
@@ -506,11 +641,34 @@ func (l *Launcher) taskNotificationTargets(action officeActionLog, task teamTask
 		addDelayed(owner)
 	}
 
-	if lead != "" && lead != owner && lead != actor && !(action.Kind == "task_created" && actor == lead) {
+	if lead != "" && lead != owner && lead != actor && !(action.Kind == "task_created" && actor == lead) && shouldWakeLeadForTaskAction(action, task) {
 		addImmediate(lead)
 	}
 
 	return immediate, delayed
+}
+
+func shouldWakeLeadForTaskAction(action officeActionLog, task teamTask) bool {
+	if strings.TrimSpace(action.Kind) != "task_updated" {
+		return true
+	}
+	actor := strings.TrimSpace(action.Actor)
+	owner := strings.TrimSpace(task.Owner)
+	if actor == "" || owner == "" || actor != owner {
+		return true
+	}
+	if task.Blocked {
+		return true
+	}
+	status := strings.ToLower(strings.TrimSpace(task.Status))
+	review := strings.ToLower(strings.TrimSpace(task.ReviewState))
+	if status == "review" || status == "done" || status == "blocked" {
+		return true
+	}
+	if review == "ready_for_review" || review == "approved" {
+		return true
+	}
+	return false
 }
 
 func (l *Launcher) taskForAction(action officeActionLog) (teamTask, bool) {
@@ -687,10 +845,9 @@ func (l *Launcher) notificationTargetsForMessage(msg channelMessage) (immediate 
 		return []notificationTarget{target}, nil
 	}
 	lead := l.officeLeadSlug()
-	domain := inferMessageDomain(msg)
 	owner := ""
 	if l.broker != nil {
-		owner = l.taskOwnerForDomain(msg.Channel, domain)
+		owner = l.taskOwnerForMessage(msg)
 	}
 	enabledMembers := map[string]struct{}{}
 	if l.broker != nil {
@@ -730,13 +887,13 @@ func (l *Launcher) notificationTargetsForMessage(msg channelMessage) (immediate 
 		if containsSlug(msg.Tagged, slug) {
 			return true
 		}
-		if owner != "" && slug != owner {
+		if owner != "" {
+			return slug == owner
+		}
+		if strings.TrimSpace(msg.Content) == "" && strings.TrimSpace(msg.Title) == "" {
 			return false
 		}
-		if domain == "" || domain == "general" {
-			return false
-		}
-		return inferAgentDomain(slug) == domain
+		return l.messageTargetsAgent(msg, slug)
 	}
 
 	// Focus mode (delegation): CEO routes all work. Specialists only wake
@@ -839,30 +996,6 @@ func (l *Launcher) notificationTargetsForMessage(msg channelMessage) (immediate 
 		}
 	}
 	return immediate, delayed
-}
-
-func (l *Launcher) taskOwnerForDomain(channel, domain string) string {
-	if l.broker == nil || domain == "" || domain == "general" {
-		return ""
-	}
-	var owner string
-	for _, task := range l.broker.AllTasks() {
-		if task.Status == "done" {
-			continue
-		}
-		if task.Owner == "" {
-			continue
-		}
-		if inferAgentDomain(task.Owner) == domain {
-			if owner == "" {
-				owner = task.Owner
-			}
-			if task.Owner == owner {
-				return owner
-			}
-		}
-	}
-	return owner
 }
 
 func (l *Launcher) watchChannelPaneLoop(channelCmd string) {
@@ -1354,184 +1487,6 @@ func (l *Launcher) recordWatchdogLedger(channel, kind, targetID, owner, summary,
 	return signalIDs, decision.ID
 }
 
-func (l *Launcher) fetchAndPostNexInsights(client *api.Client) {
-	if l.broker == nil {
-		return
-	}
-	now := time.Now().UTC()
-	if l.broker.InsightsCursor() == "" {
-		_ = l.broker.SetInsightsCursor(now.Format(time.RFC3339Nano))
-		return
-	}
-
-	params := url.Values{}
-	params.Set("from", l.broker.InsightsCursor())
-	params.Set("to", now.Format(time.RFC3339Nano))
-	params.Set("limit", "20")
-
-	raw, err := client.GetRaw("/v1/insights?"+params.Encode(), 20*time.Second)
-	if err != nil {
-		return
-	}
-	_ = parseInsightsResponse(raw) // parse and discard — CEO sees Nex context via MCP, not signal machinery
-	_ = l.broker.SetInsightsCursor(now.Format(time.RFC3339Nano))
-}
-
-func parseInsightsResponse(raw string) []nexInsight {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	var envelope nexInsightsEnvelope
-	if err := json.Unmarshal([]byte(raw), &envelope); err == nil && len(envelope.Insights) > 0 {
-		return envelope.Insights
-	}
-	var direct []nexInsight
-	if err := json.Unmarshal([]byte(raw), &direct); err == nil {
-		return direct
-	}
-	return nil
-}
-
-func selectImportantInsights(insights []nexInsight) []nexInsight {
-	var important []nexInsight
-	for _, insight := range insights {
-		confidence := strings.ToLower(strings.TrimSpace(insight.ConfidenceLevel))
-		kind := strings.ToLower(strings.TrimSpace(insight.Type))
-		if confidence == "high" || confidence == "very_high" || strings.Contains(kind, "risk") || strings.Contains(kind, "opportun") {
-			important = append(important, insight)
-		}
-	}
-	if len(important) == 0 && len(insights) > 0 {
-		important = append(important, insights...)
-	}
-	if len(important) > 3 {
-		important = important[:3]
-	}
-	return important
-}
-
-func summarizeInsightsForCEO(insights []nexInsight) (string, []string, []insightTaskPlan) {
-	lines := []string{"Nex surfaced a few things that look worth acting on:"}
-	var tagged []string
-	var tasks []insightTaskPlan
-	seenOwners := map[string]struct{}{}
-	for _, insight := range insights {
-		text := strings.TrimSpace(insight.Content)
-		if text == "" {
-			continue
-		}
-		if hint := strings.TrimSpace(insight.Target.Hint); hint != "" {
-			text += " (" + hint + ")"
-		}
-		lines = append(lines, "- "+text)
-		owner := inferInsightOwner(insight)
-		if owner != "" {
-			if _, ok := seenOwners[owner]; !ok {
-				tagged = append(tagged, owner)
-				seenOwners[owner] = struct{}{}
-			}
-			tasks = append(tasks, insightTaskPlan{
-				Owner:   owner,
-				Title:   fmt.Sprintf("Follow up on Nex insight: %s", truncate(strings.TrimSpace(insight.Content), 72)),
-				Details: text,
-			})
-		}
-	}
-	if len(tasks) > 0 {
-		lines = append(lines, "", "I opened tasks for the right owners so we do not dogpile this.")
-	}
-	return strings.Join(lines, "\n"), tagged, tasks
-}
-
-func inferInsightOwner(insight nexInsight) string {
-	text := strings.ToLower(strings.TrimSpace(insight.Content + " " + insight.Type + " " + insight.Target.Hint + " " + insight.Target.EntityType))
-	switch {
-	case strings.Contains(text, "pipeline"), strings.Contains(text, "deal"), strings.Contains(text, "revenue"), strings.Contains(text, "budget"), strings.Contains(text, "pricing"):
-		return "cro"
-	case strings.Contains(text, "campaign"), strings.Contains(text, "brand"), strings.Contains(text, "position"), strings.Contains(text, "marketing"), strings.Contains(text, "launch"):
-		return "cmo"
-	case strings.Contains(text, "design"), strings.Contains(text, "landing"), strings.Contains(text, "hero"), strings.Contains(text, "ui"):
-		return "designer"
-	case strings.Contains(text, "frontend"), strings.Contains(text, "web"), strings.Contains(text, "signup"):
-		return "fe"
-	case strings.Contains(text, "backend"), strings.Contains(text, "api"), strings.Contains(text, "database"), strings.Contains(text, "integration"):
-		return "be"
-	case strings.Contains(text, "ai"), strings.Contains(text, "llm"), strings.Contains(text, "transcript"), strings.Contains(text, "notes"), strings.Contains(text, "retrieval"):
-		return "ai"
-	default:
-		return "pm"
-	}
-}
-
-func (l *Launcher) fetchAndIngestNexNotifications(client *api.Client) {
-	if l.broker == nil {
-		return
-	}
-	if l.broker.NotificationCursor() == "" {
-		// Cold starts should not replay old feed history into a fresh office.
-		// Seed the cursor at "now" and only surface notifications that arrive after launch.
-		_ = l.broker.SetNotificationCursor(time.Now().UTC().Format(time.RFC3339Nano))
-		return
-	}
-
-	params := url.Values{}
-	params.Set("limit", "10")
-	if since := l.broker.NotificationCursor(); since != "" {
-		params.Set("since", since)
-	}
-
-	result, err := api.Get[nexFeedResponse](client, "/v1/notifications/feed?"+params.Encode(), 15*time.Second)
-	if err != nil {
-		return
-	}
-	if len(result.Items) == 0 {
-		return
-	}
-
-	latest := l.broker.NotificationCursor()
-	for _, item := range result.Items {
-		if item.SentAt != "" && (latest == "" || item.SentAt > latest) {
-			latest = item.SentAt
-		}
-	}
-	if latest != "" {
-		_ = l.broker.SetNotificationCursor(latest)
-	}
-}
-
-func formatNexFeedItem(item nexFeedItem) (string, string) {
-	title := humanizeNotificationType(item.Type)
-	var lines []string
-
-	for _, important := range item.Content.ImportantItems {
-		line := strings.TrimSpace(important.Title)
-		if important.Context != "" {
-			line += " — " + strings.TrimSpace(important.Context)
-		}
-		if important.EstimatedTime != "" {
-			line += " (" + strings.TrimSpace(important.EstimatedTime) + ")"
-		}
-		if line != "" {
-			lines = append(lines, "Important: "+line)
-		}
-	}
-	for _, change := range item.Content.EntityChanges {
-		line := strings.TrimSpace(change.Title)
-		if change.Context != "" {
-			line += " — " + strings.TrimSpace(change.Context)
-		}
-		if line != "" {
-			lines = append(lines, "Change: "+line)
-		}
-	}
-
-	if title == "" && len(lines) > 0 {
-		title = "Context alert"
-	}
-
-	return title, strings.Join(lines, "\n")
-}
 func (req humanInterview) TitleOrDefault() string {
 	if strings.TrimSpace(req.Title) != "" {
 		return req.Title
@@ -1693,9 +1648,9 @@ func (l *Launcher) OneOnOneAgent() string {
 	return l.oneOnOneAgent()
 }
 
-// killStaleBroker kills any process holding port 7890 from a previous run.
+// killStaleBroker kills any process holding the configured broker port from a previous run.
 func killStaleBroker() {
-	out, err := exec.Command("lsof", "-i", fmt.Sprintf(":%d", BrokerPort), "-t").Output()
+	out, err := exec.Command("lsof", "-i", fmt.Sprintf(":%d", brokeraddr.ResolvePort()), "-t").Output()
 	if err != nil || len(out) == 0 {
 		return
 	}
@@ -2200,14 +2155,13 @@ func (l *Launcher) relevantTaskForTarget(msg channelMessage, slug string) (teamT
 	if replyTo := strings.TrimSpace(msg.ReplyTo); replyTo != "" {
 		threadRoot = replyTo
 	}
-	domain := inferMessageDomain(msg)
-
 	// Search all channels: a specialist's task may live in a dedicated channel (e.g.
 	// "engineering") even when the triggering message arrived from "general". Using
 	// ChannelTasks(channel) here caused cross-channel delegations to silently omit the
 	// "Active task" line from work packets and give specialists the wrong response
 	// instruction ("stay quiet" instead of "you own matching work").
 	var domainOwned teamTask
+	bestOwnedScore := 0.0
 	for _, task := range l.broker.AllTasks() {
 		if strings.EqualFold(strings.TrimSpace(task.Status), "done") {
 			continue
@@ -2218,8 +2172,10 @@ func (l *Launcher) relevantTaskForTarget(msg channelMessage, slug string) (teamT
 		if task.ThreadID != "" && (task.ThreadID == msg.ID || task.ThreadID == threadRoot) {
 			return task, true
 		}
-		if domain != "" && domain != "general" && inferAgentDomain(slug) == domain {
+		score := l.scoreMessageForTaskCandidate(msg, task)
+		if score >= officeRoutingMatchThreshold && score > bestOwnedScore {
 			domainOwned = task
+			bestOwnedScore = score
 		}
 	}
 	if domainOwned.ID != "" {
@@ -2238,7 +2194,7 @@ func (l *Launcher) responseInstructionForTarget(msg channelMessage, slug string)
 		from := strings.TrimSpace(msg.From)
 		isFromHuman := from == "" || from == "you" || from == "human" || from == "nex"
 		if !isFromHuman {
-			return fmt.Sprintf("You are @%s. A specialist just finished a lane. If the build is still underway, any task is open or in review, or the next lane is obvious, act now: approve/release review items, create the next owned team_task records, and only then stop. Before creating any new task, inspect Active tasks in this packet: if a live task already covers that lane, reuse or update that task instead of creating an overlapping duplicate with a new title. Stay quiet only when the human already has what they need AND there is no remaining office work or obvious follow-up.", slug)
+			return fmt.Sprintf("You are @%s. A specialist just finished a lane. If the build is still underway, any task is open or in review, or the next lane is obvious, act now: approve/release review items, create the next owned team_task records, and only then stop. On a human build/ship/end-to-end request, if you approve or close an engineering/execution slice and the product is not yet runnable end to end, you MUST leave at least one engineering or execution lane active before you stop; do not let the company drift into GTM-only, rubric-only, or evaluation-only work while the build is still incomplete. Before you say a task is approved, closed, back in progress, reassigned, or blocked, you MUST make the matching team_task or team_plan call first; channel narration alone does not change durable state. If the task mutation fails, say that it failed and do not claim the state changed. Before creating any new task, inspect Active tasks in this packet: if a live task already covers that lane, reuse or update that task instead of creating an overlapping duplicate with a new title. Stay quiet only when the human already has what they need AND there is no remaining office work or obvious follow-up.", slug)
 		}
 		return fmt.Sprintf("You are @%s. Give the first top-level reply quickly, then pull in specialists only when needed. For build/ship/end-to-end requests, the first engineering task itself must be a single smallest runnable feature slice, not an MVP umbrella or a multi-output minimum bar. Do not put a separate repo audit, architecture, or cut-line research task in front of that first feature unless the human explicitly asked for analysis first or the repo truly has no identifiable implementation target. Do not spend the whole first turn on `pwd`, `ls`, `rg --files`, `find .`, or another repo-wide inventory; use the named docs/configs in the packet or at most one or two targeted reads, then create the first durable task/channel state in that same turn.", slug)
 	}
@@ -2255,6 +2211,9 @@ func (l *Launcher) responseInstructionForTarget(msg channelMessage, slug string)
 		return fmt.Sprintf("You are @%s. You were directly tagged. Reply only from your domain with concrete progress, a blocker, or a handoff.", slug)
 	}
 	if task, ok := l.relevantTaskForTarget(msg, slug); ok && strings.TrimSpace(task.Owner) == slug {
+		if taskRequiresRealExternalExecution(&task) {
+			return fmt.Sprintf("You are @%s. You already own matching work that requires a real connected-system action. Take the smallest allowed live external step now or report a blocker; repo docs, previews, and local markdown do not satisfy it.", slug)
+		}
 		return fmt.Sprintf("You are @%s. You already own matching work. Reply only with concrete progress or a blocker; do not re-triage the thread.", slug)
 	}
 	return fmt.Sprintf("You are @%s. Stay quiet unless you are directly tagged, you own the active work, or you can unblock it. Prefer not to reply.", slug)
@@ -2424,8 +2383,14 @@ func (l *Launcher) buildTaskExecutionPacket(slug string, action officeActionLog,
 			lines = append(lines, "Startup rule: open the named file targets first and use them as your starting point. Do not broaden into repo search unless those exact files are insufficient for the chosen cut line.")
 		}
 		lines = append(lines, "Audit guardrail: do NOT start with `rg --files`, `find .`, repo-wide README sweeps, or broad file inventories. Read only the handful of files directly tied to this task, then begin editing once you have the first target file.")
+		lines = append(lines, "Boundary rule: stay inside the assigned working_directory. Do NOT run `find ..`, `rg ..`, search sibling task worktrees, or inspect parent temp directories like `/var/folders`, `TMPDIR`, or `TemporaryItems`. Those paths are sandbox noise, not repo context.")
 		lines = append(lines, "Dirty-tree rule: ignore unrelated modified or untracked files already present in the worktree unless they are directly required for your slice. They may be preexisting repo state, not part of your task.")
 		lines = append(lines, "Deliverable rule: a local_worktree feature task is not satisfied by another plan, architecture memo, or audit summary unless the packet explicitly says research-only. Land code, scripts, docs for the runnable slice, or a concrete task-state blocker.")
+	}
+	if taskRequiresRealExternalExecution(&task) {
+		lines = append(lines, "External execution rule: this task names a connected external system and expects a real action there. Use the live integration/workflow path for the smallest allowed step now instead of producing another repo doc or internal package first.")
+		lines = append(lines, "Evidence rule: a local markdown file, preview note, or repo artifact does NOT satisfy this task unless the packet explicitly says preview/mock/stub-only. Leave durable external evidence through the broker-integrated workflow/integration path before marking the task review-ready, done, or blocked.")
+		lines = append(lines, "Pace rule: do the smallest safe external step first, then summarize it. Do not spend this turn building extra kickoff decks, review bundles, or substitute proof artifacts if the connected system action is already allowed.")
 	}
 	// Walk up from task.ThreadID to the ultimate thread root (the original human ask)
 	// so agents see the full ancestry, not just a mid-thread branch. The thread root
@@ -2435,14 +2400,14 @@ func (l *Launcher) buildTaskExecutionPacket(slug string, action officeActionLog,
 	if ctx := l.buildNotificationContext(channel, "", threadRoot, 3); ctx != "" {
 		lines = append(lines, ctx)
 	}
-	lines = append(lines, fmt.Sprintf("If you deliver the substantive result for #%s in this turn, you MUST call team_task complete for \"%s\" before you stop. A channel reply alone does not unblock dependent work.", task.ID, task.ID))
+	lines = append(lines, fmt.Sprintf("If you deliver the substantive result for #%s in this turn, you MUST call team_task complete or review-ready for \"%s\" before any completion post and before you stop. A channel reply alone does not unblock dependent work, and a completion post without the task mutation is a failure.", task.ID, task.ID))
 	lines = append(lines, "Runtime rule: never launch another WUPHF office, copied wuphf binary, browser instance, or local web server/--web-port process from inside this turn. The office is already running; use the existing repo, broker state, and assigned worktree instead.")
 	lines = append(lines, fmt.Sprintf("%s Use team_task with my_slug \"%s\" to update status as you go.", truncate(content, 1000), slug))
 	return strings.Join(lines, "\n")
 }
 
 func headlessSandboxNote() string {
-	return "Runtime: this office is already running. Never launch another `wuphf`, copied `wuphf` binary, `/reset`, browser instance, or local server/`--web-port` process from inside your turn. For `execution_mode=local_worktree`, make edits directly in the assigned working_directory instead of re-auditing or trying to boot a second office. If shell commands fail with 'operation not permitted' or 'permission denied' (go build cache, localhost bind, sandboxed writes), stop retrying them and continue from code inspection or the existing running office.\n\n"
+	return "Runtime: this office is already running. Never launch another `wuphf`, copied `wuphf` binary, `/reset`, browser instance, or local server/`--web-port` process from inside your turn. For `execution_mode=local_worktree`, make edits directly in the assigned working_directory instead of re-auditing or trying to boot a second office. Never search parent or sibling temp directories (`find ..`, `rg ..`, `/var/folders`, `TMPDIR`, `TemporaryItems`) from a task worktree; stay inside the assigned working_directory. If shell commands fail with 'operation not permitted' or 'permission denied' (go build cache, localhost bind, sandboxed writes), stop retrying them and continue from code inspection or the existing running office.\n\n"
 }
 
 func (l *Launcher) sendChannelUpdate(target notificationTarget, msg channelMessage) {
@@ -2509,7 +2474,7 @@ func ResetBrokerState() error {
 	if token == "" {
 		token = os.Getenv("NEX_BROKER_TOKEN")
 	}
-	return resetBrokerState(fmt.Sprintf("http://127.0.0.1:%d", BrokerPort), token)
+	return resetBrokerState(brokerBaseURL(), token)
 }
 
 func ClearPersistedBrokerState() error {
@@ -2813,8 +2778,12 @@ func (l *Launcher) buildPrompt(slug string) string {
 	member := l.officeMemberBySlug(slug)
 	agentCfg := agentConfigFromMember(member)
 	officeMembers := l.officeMembersSnapshot()
-	lead := officeLeadSlugFrom(officeMembers, l.pack)
+	lead := officeLeadSlugFrom(officeMembers)
 	noNex := config.ResolveNoNex() || config.ResolveAPIKey("") == ""
+	var activePolicies []officePolicy
+	if l.broker != nil {
+		activePolicies = l.broker.ListPolicies()
+	}
 
 	var sb strings.Builder
 
@@ -2878,13 +2847,23 @@ func (l *Launcher) buildPrompt(slug string) string {
 		sb.WriteString("- team_bridge: Carry context from one channel into another (CEO only).\n")
 		sb.WriteString("- team_task: Create and assign tasks so ownership is explicit.\n")
 		sb.WriteString("- team_skill_run: Invoke a saved skill by name when the request matches one. Use this BEFORE routing or replying — it returns the canonical playbook content to follow and logs a visible skill_invocation in the channel.\n")
+		sb.WriteString("- team_action_connections / team_action_search / team_action_knowledge: inspect connected external systems and the exact action/workflow schema before you improvise. If connection listing is flaky, do NOT stop there; search/knowledge still give you the real action contract.\n")
+		sb.WriteString("- team_action_execute / team_action_workflow_execute: use these for real external reads, writes, and workflow runs. Prefer dry_run only when the task or policy says preview/mock first. When the provider is One and there is exactly one connected account for that platform, you may omit connection_key and let the runtime auto-resolve it.\n")
 		sb.WriteString("- human_message: Present output or a recommendation directly to the human.\n")
 		sb.WriteString("- human_interview: Ask the human a blocking decision question — only when the team cannot proceed without it.\n")
-		sb.WriteString("Other tools: team_tasks, team_task_status, team_requests, team_request, team_status, team_members, team_office_members, team_channels, team_channel, team_member, team_channel_member.\n\n")
+		sb.WriteString("Other tools: team_tasks, team_task_status, team_requests, team_request, team_status, team_members, team_office_members, team_channels, team_channel, team_member, team_channel_member, team_action_guide, team_action_workflow_create, team_action_workflow_schedule, team_action_relays, team_action_relay_event_types, team_action_relay_create, team_action_relay_activate, team_action_relay_events, team_action_relay_event.\n\n")
 		if noNex {
 			sb.WriteString("Nex tools are disabled for this run. Work only with the shared office channel and human answers.\n\n")
 		} else {
 			sb.WriteString("Nex memory: query_context before reinventing; add_context only after a decision is actually landed.\n\n")
+		}
+		if len(activePolicies) > 0 {
+			sb.WriteString("== ACTIVE OFFICE POLICIES ==\n")
+			sb.WriteString("Treat these as hard operating constraints, not suggestions. If a policy conflicts with an older chat assumption, the active policy wins until the human changes it.\n")
+			for _, policy := range activePolicies {
+				sb.WriteString(fmt.Sprintf("- %s\n", policy.Rule))
+			}
+			sb.WriteString("\n")
 		}
 		sb.WriteString("Tagged agents are expected to respond.\n\n")
 		if l.isFocusModeEnabled() {
@@ -2924,7 +2903,11 @@ func (l *Launcher) buildPrompt(slug string) string {
 		sb.WriteString("15. When first-pass specialist outputs land and obvious downstream work remains, create the next owned task before you end the turn. Do not stop at synthesis if the build still has a clear next step.\n")
 		sb.WriteString("15b. Before you create a new task, inspect the Active tasks in the packet. If an open, in-progress, or review task already covers that lane, reuse or update that task instead of creating an overlapping duplicate with a fresh title.\n")
 		sb.WriteString("16. If a task lands in review but no human approval is actually needed, approve it or immediately translate it into the next task. Do not leave the company idle behind an internal review gate.\n")
+		sb.WriteString("16b. Before you write any sentence claiming a task is approved, closed, reopened, reassigned, or blocked, you MUST make the matching team_task or team_plan call first. Channel narration does not mutate durable task state. If the mutation fails, say it failed and do not claim success.\n")
+		sb.WriteString("16c. On a human build/ship/end-to-end request, after you approve or close any engineering/execution slice, if the system is not yet runnable end to end and no engineering/execution lane remains active, create the next engineering/execution task in that same turn before you stop. Do not replace the only live build lane with GTM-only packaging, eval prompts, scoring rubrics, or other sidecar work.\n")
+		sb.WriteString("16d. When a task or policy allows a low-risk external step on a connected system, prefer the smallest real external action now over more internal collateral. A Slack/Notion/Drive lane is not satisfied by repo markdown, preview notes, or substitute proof artifacts unless the task explicitly says mock/preview/stub-only.\n")
 		sb.WriteString("17. Create channels (team_channel) or agents (team_member) when the human asks or scope genuinely warrants it. For cross-functional initiatives that will run beyond one decision cycle, create a dedicated execution channel and keep #general for top-level decisions.\n")
+		sb.WriteString("17b. When the human explicitly asks to add or test integrations, generated skills, reusable workflows, or generated agents, you MUST leave durable state for that work in the same turn. Create the integration/onboarding task lane(s), propose or update the relevant skill block(s), and create any needed specialist agent(s) instead of only describing them narratively. If real accounts, credentials, spend, publishing, or other external side effects would be required, proceed with stubs/placeholders until the exact human approval is truly needed.\n")
 		sb.WriteString("18. Sequence structural changes safely: create a new specialist with team_member first, wait for success, then add them to channels or tag them. When creating a new channel, only include members that already exist.\n")
 		sb.WriteString("19. For `team_channel` create/remove calls, set `channel` to the explicit target slug like `youtube-factory`; it is not inferred from the current room.\n")
 		sb.WriteString("20. Use team_bridge to carry context between channels when relevant\n")
@@ -2938,10 +2921,13 @@ func (l *Launcher) buildPrompt(slug string) string {
 		sb.WriteString("[SKILL PROPOSAL]\nName: <slug-name>\nTitle: <Short human title>\nDescription: <one-line description>\nTrigger: <when to invoke>\nTags: <tag1, tag2>\n---\n<step-by-step instructions>\n[/SKILL PROPOSAL]\n\n")
 		sb.WriteString("Rules:\n")
 		sb.WriteString("- Propose when you see a pattern repeated 2+ times by the team, or when the human explicitly asked for reusable workflow automation\n")
+		sb.WriteString("- If the human explicitly asked for generated skills or reusable workflows, at least one concrete proposal or update must land in the same turn before you stop; narrative mentions alone are a failure\n")
 		sb.WriteString("- If a recurring workflow is central to the project's operation, propose it instead of re-explaining it every round\n")
 		sb.WriteString("- Keep instructions concrete and executable, not vague\n")
 		sb.WriteString("- The human will be asked to approve before it becomes active\n")
-		sb.WriteString("- To suggest adding a new specialist agent, use team_member with a clear expertise and rationale\n\n")
+		sb.WriteString("- To suggest adding a new specialist agent, use team_member with a clear expertise and rationale\n")
+		sb.WriteString("- When integrations matter, make the required systems explicit in the skill instructions and agent rationale so the team knows which connected accounts or placeholders each workflow expects\n")
+		sb.WriteString("- When you create a new specialist for integration/onboarding work, include the owned integrations directly in that agent's expertise so the roster clearly shows who owns Gmail, Slack, YouTube, Drive, analytics, or similar lanes\n\n")
 		sb.WriteString("STYLE: Be concise, delegate, short lively messages. Use markdown tables/checklists for structured data.\n")
 		if noNex {
 			sb.WriteString("Do not claim you stored anything outside the office.\n")
@@ -2970,13 +2956,23 @@ func (l *Launcher) buildPrompt(slug string) string {
 		sb.WriteString("- team_bridge: CEO-only bridge for cross-channel context. Ask the CEO to use it.\n")
 		sb.WriteString("- team_task: Claim, complete, block, or release tasks in your domain.\n")
 		sb.WriteString("- team_skill_run: When @ceo tells you to run a skill, or when the request clearly matches one, call team_skill_run(skill_name) BEFORE doing the work. It returns the canonical step-by-step content — follow it exactly instead of freelancing. Failing to invoke the skill leaves the office with no trace that the playbook was actually used.\n")
+		sb.WriteString("- team_action_connections / team_action_search / team_action_knowledge: inspect connected external systems and the exact action/workflow schema before you improvise. If connection listing is flaky, do NOT stop there; search/knowledge still give you the real action contract.\n")
+		sb.WriteString("- team_action_execute / team_action_workflow_execute: use these for real external reads, writes, and workflow runs. Prefer dry_run only when the task or policy says preview/mock first. When the provider is One and there is exactly one connected account for that platform, you may omit connection_key and let the runtime auto-resolve it.\n")
 		sb.WriteString("- human_message: Present completion or a recommendation directly to the human.\n")
 		sb.WriteString("- human_interview: Ask the human only for blocking clarifications you cannot responsibly guess.\n")
-		sb.WriteString("Other tools: team_tasks, team_task_status, team_requests, team_request, team_status, team_members, team_office_members, team_channels, team_channel, team_member, team_channel_member.\n\n")
+		sb.WriteString("Other tools: team_tasks, team_task_status, team_requests, team_request, team_status, team_members, team_office_members, team_channels, team_channel, team_member, team_channel_member, team_action_guide, team_action_workflow_create, team_action_workflow_schedule, team_action_relays, team_action_relay_event_types, team_action_relay_create, team_action_relay_activate, team_action_relay_events, team_action_relay_event.\n\n")
 		if noNex {
 			sb.WriteString("Nex tools are disabled for this run. Base your work on the office conversation and direct human answers only.\n\n")
 		} else {
 			sb.WriteString("Nex memory: query_context before making assumptions; add_context only for durable conclusions.\n\n")
+		}
+		if len(activePolicies) > 0 {
+			sb.WriteString("== ACTIVE OFFICE POLICIES ==\n")
+			sb.WriteString("Treat these as hard operating constraints, not suggestions. If a policy conflicts with an older chat assumption, the active policy wins until the human changes it.\n")
+			for _, policy := range activePolicies {
+				sb.WriteString(fmt.Sprintf("- %s\n", policy.Rule))
+			}
+			sb.WriteString("\n")
 		}
 		sb.WriteString("Tag agents with @slug. Tagged agents must respond.\n")
 		if l.isFocusModeEnabled() {
@@ -2995,12 +2991,15 @@ func (l *Launcher) buildPrompt(slug string) string {
 		sb.WriteString("3. Push back when you disagree — explain why using your expertise\n")
 		sb.WriteString("4. Check team_requests before asking the human anything new\n")
 		sb.WriteString("5. For completion or recommendations, use human_message. For blocking human decisions, use human_interview with options.\n")
-		sb.WriteString("6. When assigned a task, claim it with team_task first, use team_status to show what you're working on, then mark complete and broadcast when done. A task is NOT finished until team_task marks it complete or review-ready; posting a channel reply alone does not unblock downstream work. If the CEO delegates a substantial workstream and the packet shows no owned task yet, do one quick team_tasks check before creating a fallback task; if a matching task already exists, claim that instead of duplicating it. Only create a fallback task when the delegated work is substantial and no matching task exists after that single check. If the result is mainly for the human, also send it via human_message.\n")
+		sb.WriteString("6. When assigned a task, claim it with team_task first, use team_status to show what you're working on, then mark complete or review-ready and broadcast when done. Final sequence for owned tasks: team_task mutation first, then any completion broadcast or human_message, then stop. A task is NOT finished until team_task marks it complete or review-ready; posting a channel reply alone does not unblock downstream work, and a completion post while the task stays in_progress is a failure. If the CEO delegates a substantial workstream and the packet shows no owned task yet, do one quick team_tasks check before creating a fallback task; if a matching task already exists, claim that instead of duplicating it. Only create a fallback task when the delegated work is substantial and no matching task exists after that single check. If the result is mainly for the human, also send it via human_message.\n")
 		sb.WriteString("7. You can see other channel names and descriptions, but cannot access their content unless you are a member. If context from another channel is needed, ask the CEO to bridge it.\n")
 		sb.WriteString("8. If a task or status line shows a worktree path, use that as working_directory for local file and bash tools.\n")
 		sb.WriteString("9. For local_worktree or feature tasks, default to direct implementation in the assigned worktree. Do not relaunch WUPHF, copied binaries, or a fresh local server just to inspect the app; use the current repo and running office instead.\n")
 		sb.WriteString("10. For local_worktree feature tasks, do NOT start with `rg --files`, `find .`, or a repo-wide audit. Read only the few files directly tied to the requested slice, then start editing. If the task is broad or lists multiple outputs, narrow it yourself to one exact smallest runnable slice, post a `team_status` naming that cut line, and ship that slice now.\n")
+		sb.WriteString("10b. Never search parent or sibling directories outside the assigned working_directory (`find ..`, `rg ..`, `/var/folders`, `TMPDIR`, `TemporaryItems`, or other task worktrees). If you need instructions, read `AGENTS.md` or `README.md` inside the assigned worktree only.\n")
 		sb.WriteString("11. Ignore unrelated modified or untracked files already present in the assigned worktree unless they are directly needed for your slice. They may be preexisting repo state; do not audit or re-explain them.\n")
+		sb.WriteString("11b. If a task names a connected external system and asks you to create, post, query, or run something there, do that live external step through the connected workflow/integration path. Repo docs, previews, or local markdown do not count unless the task explicitly says mock/preview/stub-only.\n")
+		sb.WriteString("11c. When a task calls for Slack, Notion, Drive, or another connected system, use the `team_action_*` tools first. Do NOT probe localhost broker routes, curl the provider directly, or fall back to shell-side API experiments when the office action tools can do the job.\n")
 		if noNex {
 			sb.WriteString("12. Don't fake outside memory. Surface uncertainty in-channel and keep outcomes explicit in-thread.\n")
 			sb.WriteString("13. Once you have posted the needed update for the current packet, stop. A later pushed notification will wake you again if more is needed.\n\n")
@@ -3052,14 +3051,15 @@ func (l *Launcher) claudeCommand(slug, systemPrompt string) string {
 	model := l.headlessClaudeModel(slug)
 
 	return fmt.Sprintf(
-		"%s%s%sWUPHF_AGENT_SLUG=%s WUPHF_BROKER_TOKEN=%s WUPHF_NO_NEX=%t ANTHROPIC_PROMPT_CACHING=1 CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=otlp OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/json OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:%d/v1/logs OTEL_EXPORTER_OTLP_HEADERS='Authorization=Bearer %s' OTEL_RESOURCE_ATTRIBUTES='agent.slug=%s,wuphf.channel=office' claude --model %s %s --append-system-prompt '%s' --mcp-config '%s' --strict-mcp-config -n '%s'",
+		"%s%s%sWUPHF_AGENT_SLUG=%s WUPHF_BROKER_TOKEN=%s WUPHF_BROKER_BASE_URL=%s WUPHF_NO_NEX=%t ANTHROPIC_PROMPT_CACHING=1 CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=otlp OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/json OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=%s/v1/logs OTEL_EXPORTER_OTLP_HEADERS='Authorization=Bearer %s' OTEL_RESOURCE_ATTRIBUTES='agent.slug=%s,wuphf.channel=office' claude --model %s %s --append-system-prompt '%s' --mcp-config '%s' --strict-mcp-config -n '%s'",
 		oneOnOneEnv,
 		oneSecretEnv,
 		oneIdentityEnv,
 		slug,
 		brokerToken,
+		l.BrokerBaseURL(),
 		config.ResolveNoNex(),
-		BrokerPort,
+		l.BrokerBaseURL(),
 		brokerToken,
 		slug,
 		model,
@@ -3076,8 +3076,8 @@ func (l *Launcher) resolvePermissionFlags(slug string) string {
 	return "--permission-mode bypassPermissions --dangerously-skip-permissions"
 }
 
-// codingAgentSlugs lists agents that run code and get workspace isolation.
-// These agents only receive the wuphf-office MCP server (no CRM context).
+// codingAgentSlugs lists agents that default to a minimal coding-focused MCP set.
+// Task-level local_worktree isolation is driven by execution_mode, not this list.
 var codingAgentSlugs = map[string]bool{
 	"eng":       true,
 	"fe":        true,
@@ -3271,9 +3271,32 @@ func (l *Launcher) officeMembersSnapshot() []officeMember {
 		members := make([]officeMember, 0, len(l.pack.Agents))
 		for _, cfg := range l.pack.Agents {
 			member := officeMember{
-				Slug: cfg.Slug,
-				Name: cfg.Name,
-				Role: cfg.Name,
+				Slug:           cfg.Slug,
+				Name:           cfg.Name,
+				Role:           cfg.Name,
+				Expertise:      append([]string(nil), cfg.Expertise...),
+				Personality:    cfg.Personality,
+				PermissionMode: cfg.PermissionMode,
+				AllowedTools:   append([]string(nil), cfg.AllowedTools...),
+				BuiltIn:        cfg.Slug == l.pack.LeadSlug || cfg.Slug == "ceo",
+			}
+			applyOfficeMemberDefaults(&member)
+			members = append(members, member)
+		}
+		return members
+	}
+	if manifest, err := company.LoadRuntimeManifest(resolveRepoRoot(l.cwd)); err == nil && len(manifest.Members) > 0 {
+		members := make([]officeMember, 0, len(manifest.Members))
+		for _, cfg := range manifest.Members {
+			member := officeMember{
+				Slug:           cfg.Slug,
+				Name:           cfg.Name,
+				Role:           cfg.Role,
+				Expertise:      append([]string(nil), cfg.Expertise...),
+				Personality:    cfg.Personality,
+				PermissionMode: cfg.PermissionMode,
+				AllowedTools:   append([]string(nil), cfg.AllowedTools...),
+				BuiltIn:        cfg.System,
 			}
 			applyOfficeMemberDefaults(&member)
 			members = append(members, member)
@@ -3284,8 +3307,8 @@ func (l *Launcher) officeMembersSnapshot() []officeMember {
 }
 
 // resetManifestToPack overwrites company.json with the members defined in the
-// given pack. Called when the user passes --pack explicitly so the flag is
-// authoritative over any previously saved company configuration.
+// given legacy pack. Called when the user passes --pack explicitly so the flag
+// remains authoritative over any previously saved company configuration.
 func resetManifestToPack(pack *agent.PackDefinition) error {
 	members := make([]company.MemberSpec, 0, len(pack.Agents))
 	for _, cfg := range pack.Agents {
@@ -3306,6 +3329,42 @@ func resetManifestToPack(pack *agent.PackDefinition) error {
 		Members: members,
 	}
 	return company.SaveManifest(manifest)
+}
+
+func resetManifestToOperationBlueprint(repoRoot, blueprintID string) error {
+	manifest := company.Manifest{
+		BlueprintRefs: []company.BlueprintRef{{
+			Kind:   "operation",
+			ID:     blueprintID,
+			Source: "launcher",
+		}},
+	}
+	resolved, ok := company.MaterializeManifest(manifest, repoRoot)
+	if !ok {
+		return fmt.Errorf("materialize operation blueprint %q", blueprintID)
+	}
+	return company.SaveManifest(resolved)
+}
+
+func resolveRepoRoot(start string) string {
+	start = strings.TrimSpace(start)
+	if start == "" {
+		start = "."
+	}
+	current := start
+	for {
+		if _, err := os.Stat(filepath.Join(current, "go.mod")); err == nil {
+			return current
+		}
+		if _, err := os.Stat(filepath.Join(current, "templates")); err == nil {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return start
+		}
+		current = parent
+	}
 }
 
 func loadRunningSessionMode() (string, string) {
@@ -3351,10 +3410,16 @@ func (l *Launcher) isFocusModeEnabled() bool {
 }
 
 func brokerBaseURL() string {
-	if base := strings.TrimSpace(os.Getenv("WUPHF_BROKER_BASE_URL")); base != "" {
-		return strings.TrimRight(base, "/")
+	return brokeraddr.ResolveBaseURL()
+}
+
+func (l *Launcher) BrokerBaseURL() string {
+	if l != nil && l.broker != nil {
+		if addr := strings.TrimSpace(l.broker.Addr()); addr != "" {
+			return "http://" + addr
+		}
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d", BrokerPort)
+	return brokerBaseURL()
 }
 
 func (l *Launcher) officeMemberBySlug(slug string) officeMember {
@@ -3367,31 +3432,24 @@ func (l *Launcher) officeMemberBySlug(slug string) officeMember {
 }
 
 func (l *Launcher) officeLeadSlug() string {
-	members := l.officeMembersSnapshot()
-	for _, member := range members {
-		if member.Slug == "ceo" {
-			return "ceo"
-		}
-	}
-	if l.pack != nil && l.pack.LeadSlug != "" {
+	if l.pack != nil && strings.TrimSpace(l.pack.LeadSlug) != "" {
 		return l.pack.LeadSlug
 	}
-	if len(members) > 0 {
-		return members[0].Slug
-	}
-	return ""
+	return officeLeadSlugFrom(l.activeSessionMembers())
 }
 
 // officeLeadSlugFrom derives the lead slug from an already-loaded member
 // snapshot, avoiding a redundant officeMembersSnapshot call.
-func officeLeadSlugFrom(members []officeMember, pack *agent.PackDefinition) string {
+func officeLeadSlugFrom(members []officeMember) string {
 	for _, member := range members {
 		if member.Slug == "ceo" {
 			return "ceo"
 		}
 	}
-	if pack != nil && pack.LeadSlug != "" {
-		return pack.LeadSlug
+	for _, member := range members {
+		if member.BuiltIn {
+			return member.Slug
+		}
 	}
 	if len(members) > 0 {
 		return members[0].Slug
@@ -3418,6 +3476,40 @@ func agentConfigFromMember(member officeMember) agent.AgentConfig {
 		cfg.Personality = inferOfficePersonality(member.Slug, member.Role)
 	}
 	return cfg
+}
+
+func (l *Launcher) activeSessionMembers() []officeMember {
+	members := l.officeMembersSnapshot()
+	if l == nil || l.pack == nil || len(l.pack.Agents) == 0 {
+		return members
+	}
+	bySlug := make(map[string]officeMember, len(members))
+	for _, member := range members {
+		bySlug[member.Slug] = member
+	}
+	filtered := make([]officeMember, 0, len(l.pack.Agents))
+	for _, cfg := range l.pack.Agents {
+		if member, ok := bySlug[cfg.Slug]; ok {
+			filtered = append(filtered, member)
+			continue
+		}
+		member := officeMember{
+			Slug:           cfg.Slug,
+			Name:           cfg.Name,
+			Role:           cfg.Name,
+			Expertise:      append([]string(nil), cfg.Expertise...),
+			Personality:    cfg.Personality,
+			PermissionMode: cfg.PermissionMode,
+			AllowedTools:   append([]string(nil), cfg.AllowedTools...),
+			BuiltIn:        cfg.Slug == l.pack.LeadSlug || cfg.Slug == "ceo",
+		}
+		applyOfficeMemberDefaults(&member)
+		filtered = append(filtered, member)
+	}
+	if len(filtered) > 0 {
+		return filtered
+	}
+	return members
 }
 
 // PackName returns the display name of the pack.
@@ -3551,12 +3643,13 @@ func (l *Launcher) LaunchWeb(webPort int) error {
 
 	go l.notifyAgentsLoop()
 	go l.notifyTaskActionsLoop()
+	go l.notifyOfficeChangesLoop()
 	go l.pollNexNotificationsLoop()
 	go l.watchdogSchedulerLoop()
 
 	webURL := fmt.Sprintf("http://localhost:%d", webPort)
 	fmt.Printf("\n  Web UI:  %s\n", webURL)
-	fmt.Printf("  Broker:  http://localhost:%d\n", BrokerPort)
+	fmt.Printf("  Broker:  %s\n", l.BrokerBaseURL())
 	fmt.Printf("  Press Ctrl+C to stop.\n\n")
 
 	if !l.noOpen {
@@ -3611,8 +3704,8 @@ func (l *Launcher) headlessClaudeCommand(slug, systemPrompt string) string {
 	model := l.headlessClaudeModel(slug)
 	initialPrompt := "You are now active in the WUPHF office. Notifications are pushed to you — do NOT poll for messages. Focus entirely on the work described in each pushed notification. Use team_broadcast to post replies. Only use team_poll if a pushed notification explicitly tells you context is missing."
 	return fmt.Sprintf(
-		"WUPHF_AGENT_SLUG=%s WUPHF_BROKER_TOKEN=%s WUPHF_NO_NEX=%t ANTHROPIC_PROMPT_CACHING=1 claude --model %s --print %s --append-system-prompt '%s' --mcp-config '%s' --strict-mcp-config -p '%s'",
-		slug, brokerToken, config.ResolveNoNex(), model, permFlags, escaped, mcpConfig,
+		"WUPHF_AGENT_SLUG=%s WUPHF_BROKER_TOKEN=%s WUPHF_BROKER_BASE_URL=%s WUPHF_NO_NEX=%t ANTHROPIC_PROMPT_CACHING=1 claude --model %s --print %s --append-system-prompt '%s' --mcp-config '%s' --strict-mcp-config -p '%s'",
+		slug, brokerToken, l.BrokerBaseURL(), config.ResolveNoNex(), model, permFlags, escaped, mcpConfig,
 		strings.ReplaceAll(initialPrompt, "'", "'\\''"),
 	)
 }
@@ -3632,7 +3725,10 @@ func (l *Launcher) runBackgroundAgent(slug, cmdStr string) {
 		}
 		cmd := exec.Command("bash", "-c", cmdStr)
 		cmd.Dir = l.cwd
-		cmd.Env = append(os.Environ(), fmt.Sprintf("WUPHF_BROKER_TOKEN=%s", l.broker.Token()))
+		cmd.Env = append(os.Environ(),
+			fmt.Sprintf("WUPHF_BROKER_TOKEN=%s", l.broker.Token()),
+			fmt.Sprintf("WUPHF_BROKER_BASE_URL=%s", l.BrokerBaseURL()),
+		)
 		cmd.Stdin = nil
 
 		// Fan-out stdout+stderr to the log file AND the broker's per-agent

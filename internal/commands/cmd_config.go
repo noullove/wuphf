@@ -54,9 +54,9 @@ func configShow(ctx *SlashContext) error {
 		provider = "(not set)"
 	}
 
-	pack := cfg.Pack
-	if pack == "" {
-		pack = "(not set)"
+	blueprint := cfg.ActiveBlueprint()
+	if blueprint == "" {
+		blueprint = "(not set)"
 	}
 
 	baseURL := config.BaseURL()
@@ -76,7 +76,10 @@ func configShow(ctx *SlashContext) error {
 	sb.WriteString(fmt.Sprintf("  Anthropic: %s\n", maskKey(cfg.AnthropicAPIKey)))
 	sb.WriteString(fmt.Sprintf("  OpenAI:    %s\n", maskKey(cfg.OpenAIAPIKey)))
 	sb.WriteString(fmt.Sprintf("  Minimax:   %s\n", maskKey(cfg.MinimaxAPIKey)))
-	sb.WriteString(fmt.Sprintf("  Pack:      %s\n", pack))
+	sb.WriteString(fmt.Sprintf("  Blueprint: %s\n", blueprint))
+	if legacy := strings.TrimSpace(cfg.Pack); legacy != "" && legacy != blueprint {
+		sb.WriteString(fmt.Sprintf("  Legacy pack: %s\n", legacy))
+	}
 	sb.WriteString(fmt.Sprintf("  Base URL:  %s", baseURL))
 	ctx.AddMessage("system", sb.String())
 	return nil
@@ -119,8 +122,8 @@ func configSet(ctx *SlashContext, key, value string) error {
 		cfg.OpenAIAPIKey = value
 	case "minimax_api_key":
 		cfg.MinimaxAPIKey = value
-	case "pack":
-		cfg.Pack = value
+	case "blueprint", "template", "operation_template", "pack":
+		cfg.SetActiveBlueprint(value)
 	case "team_lead_slug":
 		cfg.TeamLeadSlug = value
 	case "dev_url":
@@ -139,7 +142,7 @@ func configSet(ctx *SlashContext, key, value string) error {
 		cfg.CompanyPriority = value
 	default:
 		ctx.AddMessage("system", "Unknown config key: "+key+
-			"\nValid keys: api_key, composio_api_key, action_provider, workspace_id, workspace_slug, llm_provider, gemini_api_key, anthropic_api_key, openai_api_key, minimax_api_key, pack, team_lead_slug, dev_url, default_format, company_name, company_description, company_goals, company_size, company_priority")
+			"\nValid keys: api_key, composio_api_key, action_provider, workspace_id, workspace_slug, llm_provider, gemini_api_key, anthropic_api_key, openai_api_key, minimax_api_key, blueprint, template, operation_template, pack (legacy alias), team_lead_slug, dev_url, default_format, company_name, company_description, company_goals, company_size, company_priority")
 		return nil
 	}
 

@@ -40,7 +40,7 @@ type TeamActionKnowledgeArgs struct {
 type TeamActionExecuteArgs struct {
 	Platform        string         `json:"platform" jsonschema:"Kebab-case platform name"`
 	ActionID        string         `json:"action_id" jsonschema:"Action ID returned by team_action_search"`
-	ConnectionKey   string         `json:"connection_key" jsonschema:"Connection key from team_action_connections"`
+	ConnectionKey   string         `json:"connection_key,omitempty" jsonschema:"Optional connection key from team_action_connections. Leave blank when the current provider can auto-resolve a single connected account for the platform."`
 	Data            map[string]any `json:"data,omitempty" jsonschema:"Request body as a JSON object"`
 	PathVariables   map[string]any `json:"path_variables,omitempty" jsonschema:"Path variables as a JSON object"`
 	QueryParameters map[string]any `json:"query_parameters,omitempty" jsonschema:"Query parameters as a JSON object"`
@@ -132,62 +132,62 @@ type TeamActionRelayEventArgs struct {
 }
 
 func registerActionTools(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_guide",
-		Description: "Read the current external action provider guide in machine-readable form before building or wiring external actions.",
-	}, handleTeamActionGuide)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_connections",
-		Description: "List connected external accounts and connection keys available through the current action provider.",
-	}, handleTeamActionConnections)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_search",
-		Description: "Search for external actions on a platform using natural language. Use this before knowledge or execute.",
-	}, handleTeamActionSearch)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_knowledge",
-		Description: "Load the schema and usage guidance for an external action. Always do this before executing or wiring the action.",
-	}, handleTeamActionKnowledge)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_execute",
-		Description: "Execute an external action through the selected provider. Use dry_run first for risky writes.",
-	}, handleTeamActionExecute)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_workflow_create",
-		Description: "Save a reusable external workflow from a full WUPHF workflow JSON definition.",
-	}, handleTeamActionWorkflowCreate)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_workflow_execute",
-		Description: "Execute a saved external workflow by key or path.",
-	}, handleTeamActionWorkflowExecute)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_workflow_schedule",
-		Description: "Schedule a saved external workflow on a WUPHF-native cadence so it shows up in Calendar and runs through the office scheduler. Set run_now when the human also asked for an immediate first run.",
-	}, handleTeamActionWorkflowSchedule)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_relays",
-		Description: "List registered external triggers or relay endpoints for the selected provider.",
-	}, handleTeamActionRelays)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_relay_event_types",
-		Description: "List supported event types for a platform before creating a trigger or relay.",
-	}, handleTeamActionRelayEventTypes)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_relay_create",
-		Description: "Create an external trigger or relay for receiving events from a connected platform.",
-	}, handleTeamActionRelayCreate)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_relay_activate",
-		Description: "Enable or activate a previously registered external trigger or relay.",
-	}, handleTeamActionRelayActivate)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_relay_events",
-		Description: "List recent One relay events so the office can inspect or poll them.",
-	}, handleTeamActionRelayEvents)
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "team_action_relay_event",
-		Description: "Fetch the full payload for one specific relay event.",
-	}, handleTeamActionRelayEvent)
+	mcp.AddTool(server, readOnlyTool(
+		"team_action_guide",
+		"Read the current external action provider guide in machine-readable form before building or wiring external actions.",
+	), handleTeamActionGuide)
+	mcp.AddTool(server, readOnlyTool(
+		"team_action_connections",
+		"List connected external accounts and connection keys available through the current action provider.",
+	), handleTeamActionConnections)
+	mcp.AddTool(server, readOnlyTool(
+		"team_action_search",
+		"Search for external actions on a platform using natural language. Use this before knowledge or execute.",
+	), handleTeamActionSearch)
+	mcp.AddTool(server, readOnlyTool(
+		"team_action_knowledge",
+		"Load the schema and usage guidance for an external action. Always do this before executing or wiring the action.",
+	), handleTeamActionKnowledge)
+	mcp.AddTool(server, officeWriteTool(
+		"team_action_execute",
+		"Execute an external action through the selected provider. Use dry_run first for risky writes.",
+	), handleTeamActionExecute)
+	mcp.AddTool(server, officeWriteTool(
+		"team_action_workflow_create",
+		"Save a reusable external workflow from a full WUPHF workflow JSON definition.",
+	), handleTeamActionWorkflowCreate)
+	mcp.AddTool(server, officeWriteTool(
+		"team_action_workflow_execute",
+		"Execute a saved external workflow by key or path.",
+	), handleTeamActionWorkflowExecute)
+	mcp.AddTool(server, officeWriteTool(
+		"team_action_workflow_schedule",
+		"Schedule a saved external workflow on a WUPHF-native cadence so it shows up in Calendar and runs through the office scheduler. Set run_now when the human also asked for an immediate first run.",
+	), handleTeamActionWorkflowSchedule)
+	mcp.AddTool(server, readOnlyTool(
+		"team_action_relays",
+		"List registered external triggers or relay endpoints for the selected provider.",
+	), handleTeamActionRelays)
+	mcp.AddTool(server, readOnlyTool(
+		"team_action_relay_event_types",
+		"List supported event types for a platform before creating a trigger or relay.",
+	), handleTeamActionRelayEventTypes)
+	mcp.AddTool(server, officeWriteTool(
+		"team_action_relay_create",
+		"Create an external trigger or relay for receiving events from a connected platform.",
+	), handleTeamActionRelayCreate)
+	mcp.AddTool(server, officeWriteTool(
+		"team_action_relay_activate",
+		"Enable or activate a previously registered external trigger or relay.",
+	), handleTeamActionRelayActivate)
+	mcp.AddTool(server, readOnlyTool(
+		"team_action_relay_events",
+		"List recent One relay events so the office can inspect or poll them.",
+	), handleTeamActionRelayEvents)
+	mcp.AddTool(server, readOnlyTool(
+		"team_action_relay_event",
+		"Fetch the full payload for one specific relay event.",
+	), handleTeamActionRelayEvent)
 }
 
 func handleTeamActionGuide(ctx context.Context, _ *mcp.CallToolRequest, args TeamActionGuideArgs) (*mcp.CallToolResult, any, error) {

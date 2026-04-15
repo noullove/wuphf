@@ -194,6 +194,62 @@ func TestNotificationTargetsForMessageOneOnOneWakesSelectedAgent(t *testing.T) {
 	}
 }
 
+func TestNotificationTargetsForMessageUsesMetadataBackedTaskOwner(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	b.mu.Lock()
+	b.members = []officeMember{
+		{Slug: "operator", Name: "Operator", Role: "Lead operator", BuiltIn: true, Expertise: []string{"prioritization", "approvals"}},
+		{Slug: "bookkeeper", Name: "Bookkeeper", Role: "Finance operations specialist", Expertise: []string{"bookkeeping", "reconciliation", "invoicing", "financial analysis"}},
+		{Slug: "reviewer", Name: "Reviewer", Role: "QA reviewer", Expertise: []string{"quality assurance", "handoff review"}},
+	}
+	for i := range b.channels {
+		if b.channels[i].Slug == "general" {
+			b.channels[i].Members = []string{"operator", "bookkeeper", "reviewer"}
+		}
+	}
+	b.focusMode = false
+	b.mu.Unlock()
+
+	if _, _, err := b.EnsureTask("general", "Reconcile April invoices", "Review overdue invoice mismatches and reconcile the ledger.", "bookkeeper", "operator", ""); err != nil {
+		t.Fatalf("ensure task: %v", err)
+	}
+
+	l := &Launcher{
+		sessionName: "test",
+		pack: &agent.PackDefinition{
+			LeadSlug: "operator",
+			Agents: []agent.AgentConfig{
+				{Slug: "operator", Name: "Operator"},
+				{Slug: "bookkeeper", Name: "Bookkeeper"},
+				{Slug: "reviewer", Name: "Reviewer"},
+			},
+		},
+		broker: b,
+	}
+
+	immediate, _ := l.notificationTargetsForMessage(channelMessage{
+		ID:      "msg-1",
+		From:    "you",
+		Channel: "general",
+		Content: "Please reconcile the overdue invoices and flag any anomalies.",
+	})
+
+	if !containsNotificationTarget(immediate, "operator") {
+		t.Fatalf("expected lead operator to be notified, got %v", immediate)
+	}
+	if !containsNotificationTarget(immediate, "bookkeeper") {
+		t.Fatalf("expected metadata-matched task owner bookkeeper to be notified, got %v", immediate)
+	}
+	if containsNotificationTarget(immediate, "reviewer") {
+		t.Fatalf("did not expect unrelated reviewer to be notified, got %v", immediate)
+	}
+}
+
 func TestLoadRunningSessionModePrefersLiveBrokerState(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
@@ -757,11 +813,65 @@ func TestTaskNotificationTargetsFollowOwnerAndCEOHeadStart(t *testing.T) {
 		Channel:   "general",
 		RelatedID: "task-1",
 	}, task)
-	if len(immediate) != 1 || immediate[0].Slug != "ceo" {
-		t.Fatalf("expected CEO immediate target on owner update, got %+v", immediate)
+	if len(immediate) != 0 {
+		t.Fatalf("expected no CEO wake for in-progress owner update, got %+v", immediate)
 	}
 	if len(delayed) != 0 {
-		t.Fatalf("expected no delayed target on owner update, got %+v", delayed)
+		t.Fatalf("expected no delayed target on in-progress owner update, got %+v", delayed)
+	}
+
+	task.Status = "review"
+	task.ReviewState = "ready_for_review"
+	immediate, delayed = l.taskNotificationTargets(officeActionLog{
+		Kind:      "task_updated",
+		Actor:     "cmo",
+		Channel:   "general",
+		RelatedID: "task-1",
+	}, task)
+	if len(immediate) != 1 || immediate[0].Slug != "ceo" {
+		t.Fatalf("expected CEO immediate target on review-ready owner update, got %+v", immediate)
+	}
+	if len(delayed) != 0 {
+		t.Fatalf("expected no delayed target on review-ready owner update, got %+v", delayed)
+	}
+}
+
+func TestTaskNotificationTargetsWakeCEOWhenOwnerBlocksTask(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	l := &Launcher{
+		pack: &agent.PackDefinition{
+			LeadSlug: "ceo",
+			Agents: []agent.AgentConfig{
+				{Slug: "ceo", Name: "CEO"},
+				{Slug: "eng", Name: "Engineer"},
+			},
+		},
+	}
+	task := teamTask{
+		ID:        "task-2",
+		Channel:   "general",
+		Title:     "Implement publisher integration",
+		Owner:     "eng",
+		Status:    "blocked",
+		Blocked:   true,
+		CreatedBy: "ceo",
+	}
+
+	immediate, delayed := l.taskNotificationTargets(officeActionLog{
+		Kind:      "task_updated",
+		Actor:     "eng",
+		Channel:   "general",
+		RelatedID: "task-2",
+	}, task)
+	if len(immediate) != 1 || immediate[0].Slug != "ceo" {
+		t.Fatalf("expected CEO wake on blocked owner update, got %+v", immediate)
+	}
+	if len(delayed) != 0 {
+		t.Fatalf("expected no delayed target on blocked owner update, got %+v", delayed)
 	}
 }
 
@@ -860,12 +970,43 @@ func TestBuildTaskExecutionPacketLocalWorktreeForbidsNestedOffice(t *testing.T) 
 	if !strings.Contains(got, "do NOT start with `rg --files`") {
 		t.Fatalf("expected anti-audit guidance in packet: %q", got)
 	}
+	if !strings.Contains(got, "stay inside the assigned working_directory") {
+		t.Fatalf("expected worktree boundary guidance in packet: %q", got)
+	}
 	if !strings.Contains(got, "not satisfied by another plan, architecture memo, or audit summary") {
 		t.Fatalf("expected deliverable guidance in packet: %q", got)
 	}
 }
 
+func TestBuildTaskExecutionPacketRequiresRealExternalExecution(t *testing.T) {
+	l := &Launcher{}
+	got := l.buildTaskExecutionPacket("builder", officeActionLog{
+		Kind:  "task_updated",
+		Actor: "ceo",
+	}, teamTask{
+		ID:      "task-42",
+		Channel: "delivery",
+		Title:   "Create one new Notion proof artifact for the consulting proof",
+		Details: "Use the connected Notion workspace and then post the companion Slack handoff.",
+		Owner:   "builder",
+		Status:  "in_progress",
+	}, "Use the connected systems now.")
+	if !strings.Contains(got, "real action there") {
+		t.Fatalf("expected external execution rule in packet: %q", got)
+	}
+	if !strings.Contains(got, "local markdown file, preview note, or repo artifact does NOT satisfy this task") {
+		t.Fatalf("expected external evidence rule in packet: %q", got)
+	}
+	if !strings.Contains(got, "smallest safe external step first") {
+		t.Fatalf("expected pace rule in packet: %q", got)
+	}
+}
+
 func TestBuildPromptIncludesTaskStatusAndWorktreeGuidance(t *testing.T) {
+	oldPathFn := brokerStatePath
+	brokerStatePath = func() string { return filepath.Join(t.TempDir(), "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
 	l := &Launcher{
 		pack: &agent.PackDefinition{
 			LeadSlug: "ceo",
@@ -880,6 +1021,15 @@ func TestBuildPromptIncludesTaskStatusAndWorktreeGuidance(t *testing.T) {
 	if !strings.Contains(specialist, "team_task_status") {
 		t.Fatalf("expected team_task_status guidance in specialist prompt: %q", specialist)
 	}
+	if !strings.Contains(specialist, "team_action_connections / team_action_search / team_action_knowledge") {
+		t.Fatalf("expected action discovery guidance in specialist prompt: %q", specialist)
+	}
+	if !strings.Contains(specialist, "team_action_execute / team_action_workflow_execute") {
+		t.Fatalf("expected action execution guidance in specialist prompt: %q", specialist)
+	}
+	if !strings.Contains(specialist, "you may omit connection_key and let the runtime auto-resolve it") {
+		t.Fatalf("expected auto-resolve guidance in specialist prompt: %q", specialist)
+	}
 	if !strings.Contains(specialist, "working_directory") {
 		t.Fatalf("expected working_directory guidance in specialist prompt: %q", specialist)
 	}
@@ -888,6 +1038,12 @@ func TestBuildPromptIncludesTaskStatusAndWorktreeGuidance(t *testing.T) {
 	}
 	if !strings.Contains(specialist, "do NOT start with `rg --files`") {
 		t.Fatalf("expected anti-audit guidance in specialist prompt: %q", specialist)
+	}
+	if !strings.Contains(specialist, "Never search parent or sibling directories outside the assigned working_directory") {
+		t.Fatalf("expected worktree boundary guidance in specialist prompt: %q", specialist)
+	}
+	if !strings.Contains(specialist, "use the `team_action_*` tools first") {
+		t.Fatalf("expected action-tool-first guidance in specialist prompt: %q", specialist)
 	}
 	if !strings.Contains(specialist, "post a `team_status` naming that cut line") {
 		t.Fatalf("expected cut-line status guidance in specialist prompt: %q", specialist)
@@ -899,6 +1055,12 @@ func TestBuildPromptIncludesTaskStatusAndWorktreeGuidance(t *testing.T) {
 	lead := l.buildPrompt("ceo")
 	if !strings.Contains(lead, "team_task_status") {
 		t.Fatalf("expected team_task_status guidance in lead prompt: %q", lead)
+	}
+	if !strings.Contains(lead, "team_action_connections / team_action_search / team_action_knowledge") {
+		t.Fatalf("expected action discovery guidance in lead prompt: %q", lead)
+	}
+	if !strings.Contains(lead, "you may omit connection_key and let the runtime auto-resolve it") {
+		t.Fatalf("expected auto-resolve guidance in lead prompt: %q", lead)
 	}
 	if !strings.Contains(lead, "working_directory") {
 		t.Fatalf("expected working_directory guidance in lead prompt: %q", lead)
@@ -926,6 +1088,49 @@ func TestBuildPromptIncludesTaskStatusAndWorktreeGuidance(t *testing.T) {
 	}
 	if !strings.Contains(lead, "reuse or update that task instead of creating an overlapping duplicate") {
 		t.Fatalf("expected lead prompt to forbid overlapping duplicate tasks: %q", lead)
+	}
+	if !strings.Contains(lead, "if the system is not yet runnable end to end and no engineering/execution lane remains active, create the next engineering/execution task in that same turn before you stop") {
+		t.Fatalf("expected lead prompt to require a continuing engineering lane on build requests: %q", lead)
+	}
+}
+
+func TestBuildPromptIncludesActivePolicies(t *testing.T) {
+	b := NewBroker()
+	if err := b.SetSessionMode(SessionModeOffice, "ceo"); err != nil {
+		t.Fatalf("set session mode: %v", err)
+	}
+	if _, err := b.RecordPolicy("human_directed", "Slack and Notion writes are allowed for this proof."); err != nil {
+		t.Fatalf("record policy: %v", err)
+	}
+	if _, err := b.RecordPolicy("human_directed", "Do not delete anything or modify existing external resources."); err != nil {
+		t.Fatalf("record policy: %v", err)
+	}
+
+	l := &Launcher{
+		broker: b,
+		pack: &agent.PackDefinition{
+			LeadSlug: "ceo",
+			Agents: []agent.AgentConfig{
+				{Slug: "ceo", Name: "CEO"},
+				{Slug: "builder", Name: "Builder"},
+			},
+		},
+	}
+
+	lead := l.buildPrompt("ceo")
+	if !strings.Contains(lead, "== ACTIVE OFFICE POLICIES ==") {
+		t.Fatalf("expected lead prompt to include active policies: %q", lead)
+	}
+	if !strings.Contains(lead, "Slack and Notion writes are allowed for this proof.") {
+		t.Fatalf("expected lead prompt to include policy rule text: %q", lead)
+	}
+
+	specialist := l.buildPrompt("builder")
+	if !strings.Contains(specialist, "== ACTIVE OFFICE POLICIES ==") {
+		t.Fatalf("expected specialist prompt to include active policies: %q", specialist)
+	}
+	if !strings.Contains(specialist, "Do not delete anything or modify existing external resources.") {
+		t.Fatalf("expected specialist prompt to include policy rule text: %q", specialist)
 	}
 }
 
@@ -992,6 +1197,29 @@ func TestBuildTaskNotificationContextLeadFlagsReviewAction(t *testing.T) {
 	got := l.buildTaskNotificationContext("", "ceo", 3)
 	if !strings.Contains(got, "waiting in review") {
 		t.Fatalf("expected review action guidance in lead task context: %q", got)
+	}
+}
+
+func TestResponseInstructionForLeadWakeRequiresDurableTaskMutationBeforeNarration(t *testing.T) {
+	l := &Launcher{
+		pack: &agent.PackDefinition{
+			LeadSlug: "ceo",
+			Agents: []agent.AgentConfig{
+				{Slug: "ceo", Name: "CEO"},
+				{Slug: "eng", Name: "Engineer"},
+			},
+		},
+	}
+
+	got := l.responseInstructionForTarget(channelMessage{From: "eng", Channel: "general", Content: "task is ready"}, "ceo")
+	if !strings.Contains(got, "Before you say a task is approved, closed, back in progress, reassigned, or blocked, you MUST make the matching team_task or team_plan call first") {
+		t.Fatalf("expected durable task mutation guidance in lead specialist-wake instruction: %q", got)
+	}
+	if !strings.Contains(got, "If the task mutation fails, say that it failed and do not claim the state changed") {
+		t.Fatalf("expected task mutation failure guidance in lead specialist-wake instruction: %q", got)
+	}
+	if !strings.Contains(got, "you MUST leave at least one engineering or execution lane active before you stop") {
+		t.Fatalf("expected continuing engineering lane guidance in lead specialist-wake instruction: %q", got)
 	}
 }
 
@@ -1811,6 +2039,64 @@ func TestRelevantTaskForTargetCrossChannel(t *testing.T) {
 	}
 }
 
+func TestRelevantTaskForTargetUsesRosterMetadata(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	b.mu.Lock()
+	b.members = []officeMember{
+		{Slug: "operator", Name: "Operator", Role: "Lead operator", BuiltIn: true, Expertise: []string{"prioritization", "approvals"}},
+		{Slug: "community-manager", Name: "Community Manager", Role: "Community operations specialist", Expertise: []string{"community management", "member onboarding", "retention"}},
+		{Slug: "reviewer", Name: "Reviewer", Role: "QA reviewer", Expertise: []string{"quality assurance"}},
+	}
+	for i := range b.channels {
+		if b.channels[i].Slug == "general" {
+			b.channels[i].Members = []string{"operator", "community-manager", "reviewer"}
+		}
+	}
+	b.mu.Unlock()
+
+	if _, _, err := b.EnsureTask("general", "Improve new member onboarding", "Design the onboarding flow and retention checkpoints for new community members.", "community-manager", "operator", ""); err != nil {
+		t.Fatalf("ensure task: %v", err)
+	}
+
+	l := &Launcher{
+		broker: b,
+		pack: &agent.PackDefinition{
+			LeadSlug: "operator",
+			Agents: []agent.AgentConfig{
+				{Slug: "operator", Name: "Operator"},
+				{Slug: "community-manager", Name: "Community Manager"},
+				{Slug: "reviewer", Name: "Reviewer"},
+			},
+		},
+	}
+
+	msg := channelMessage{
+		ID:      "msg-2",
+		From:    "you",
+		Channel: "general",
+		Content: "We need a better member onboarding loop to improve retention.",
+	}
+
+	task, ok := l.relevantTaskForTarget(msg, "community-manager")
+	if !ok {
+		t.Fatal("expected metadata-routed task for community-manager")
+	}
+	if task.Owner != "community-manager" {
+		t.Fatalf("expected community-manager task, got %+v", task)
+	}
+	if _, ok := l.relevantTaskForTarget(msg, "reviewer"); ok {
+		t.Fatal("did not expect reviewer to claim the onboarding task")
+	}
+	if owner := l.taskOwnerForMessage(msg); owner != "community-manager" {
+		t.Fatalf("expected community-manager owner from shared routing score, got %q", owner)
+	}
+}
+
 func TestBlockedTaskNotificationAndUnblockFlow(t *testing.T) {
 	// Verifies the full research→marketing dependency chain:
 	// 1. CEO creates marketing task with depends_on: [research-task] while research is in_progress
@@ -2068,5 +2354,119 @@ done:
 	}
 	if !hasMarketing {
 		t.Error("marketing should be in immediate targets after task_unblocked")
+	}
+}
+
+func TestOfficeChangeTaskNotificationsBackfillGeneratedMemberTask(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	b.mu.Lock()
+	b.members = []officeMember{
+		{Slug: "ceo", Name: "CEO"},
+		{Slug: "eng", Name: "Engineer"},
+		{Slug: "gtm", Name: "GTM"},
+		{Slug: "ops", Name: "Automation Ops"},
+	}
+	b.channels = []teamChannel{
+		{Slug: "general", Name: "general", Members: []string{"ceo", "eng", "gtm"}},
+		{Slug: "youtube-factory", Name: "YouTube Factory", Members: []string{"ceo", "eng", "gtm", "ops"}},
+	}
+	b.tasks = []teamTask{
+		{
+			ID:      "task-4",
+			Channel: "youtube-factory",
+			Title:   "Stand up integration stub matrix and workflow harness",
+			Owner:   "ops",
+			Status:  "in_progress",
+		},
+	}
+	b.mu.Unlock()
+
+	l := &Launcher{
+		broker:      b,
+		sessionName: "office-test",
+		pack: &agent.PackDefinition{
+			LeadSlug: "ceo",
+			Agents: []agent.AgentConfig{
+				{Slug: "ceo", Name: "CEO"},
+				{Slug: "eng", Name: "Engineer"},
+				{Slug: "gtm", Name: "GTM"},
+				{Slug: "ops", Name: "Automation Ops"},
+			},
+		},
+	}
+
+	notifications := l.officeChangeTaskNotifications(officeChangeEvent{Kind: "member_created", Slug: "ops"})
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 backfill notification, got %d", len(notifications))
+	}
+	if notifications[0].Target.Slug != "ops" {
+		t.Fatalf("expected ops target, got %q", notifications[0].Target.Slug)
+	}
+	if notifications[0].Task.ID != "task-4" {
+		t.Fatalf("expected task-4, got %q", notifications[0].Task.ID)
+	}
+	if notifications[0].Action.Kind != "task_updated" {
+		t.Fatalf("expected synthetic task_updated action, got %q", notifications[0].Action.Kind)
+	}
+}
+
+func TestOfficeChangeTaskNotificationsBackfillChannelMembershipTask(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	b.mu.Lock()
+	b.members = []officeMember{
+		{Slug: "ceo", Name: "CEO"},
+		{Slug: "ops", Name: "Automation Ops"},
+	}
+	b.channels = []teamChannel{
+		{Slug: "general", Name: "general", Members: []string{"ceo"}},
+		{Slug: "youtube-factory", Name: "YouTube Factory", Members: []string{"ceo", "ops"}},
+	}
+	b.tasks = []teamTask{
+		{
+			ID:      "task-4",
+			Channel: "youtube-factory",
+			Title:   "Stand up integration stub matrix and workflow harness",
+			Owner:   "ops",
+			Status:  "in_progress",
+		},
+		{
+			ID:      "task-5",
+			Channel: "youtube-factory",
+			Title:   "Already blocked",
+			Owner:   "ops",
+			Status:  "in_progress",
+			Blocked: true,
+		},
+	}
+	b.mu.Unlock()
+
+	l := &Launcher{
+		broker:      b,
+		sessionName: "office-test",
+		pack: &agent.PackDefinition{
+			LeadSlug: "ceo",
+			Agents: []agent.AgentConfig{
+				{Slug: "ceo", Name: "CEO"},
+				{Slug: "ops", Name: "Automation Ops"},
+			},
+		},
+	}
+
+	notifications := l.officeChangeTaskNotifications(officeChangeEvent{Kind: "channel_updated", Slug: "youtube-factory"})
+	if len(notifications) != 1 {
+		t.Fatalf("expected only the live unblocked task to backfill, got %d notifications", len(notifications))
+	}
+	if notifications[0].Task.ID != "task-4" {
+		t.Fatalf("expected task-4 notification, got %q", notifications[0].Task.ID)
 	}
 }
