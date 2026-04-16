@@ -3,6 +3,10 @@
 Date: 2026-04-14
 Scenario: Post in `#general` asking the team to build a faceless YouTube channel business with automated content creation and monetization, from the Web UI, starting from a fresh worktree and reset office state.
 
+Latest autonomy-internalization planning:
+- `docs/specs/2026-04-15-autonomy-coaching-internalization.md`
+- `docs/specs/2026-04-15-autonomy-proof-plan.md`
+
 Replay companion:
 - `docs/evals/2026-04-14-youtube-user-journey.md`
   - step-by-step Web UI path

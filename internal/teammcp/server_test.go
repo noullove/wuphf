@@ -155,6 +155,24 @@ func TestSuppressBroadcastReasonBlocksAfterUntargetedCEOReply(t *testing.T) {
 	}
 }
 
+func TestSuppressBroadcastReasonAllowsOperatorFollowUpInActiveTaskThread(t *testing.T) {
+	reason := suppressBroadcastReason(
+		"operator",
+		"`#task-24` approved and moving to the next execution slice.",
+		"msg-20",
+		[]brokerMessage{
+			{ID: "msg-16", From: "planner", Content: "Locked execution brief."},
+			{ID: "msg-20", From: "executor", Content: "Completed `#task-7` and moved it to review.", ReplyTo: "msg-16"},
+		},
+		[]brokerTaskSummary{
+			{ID: "task-24", Owner: "operator", Status: "in_progress", ThreadID: "msg-16", Title: "Approve script and open next execution lane"},
+		},
+	)
+	if reason != "" {
+		t.Fatalf("expected operator follow-up in active task thread to be allowed, got %q", reason)
+	}
+}
+
 // TestSuppressBroadcastReasonAllowsMarketingCompetitorPricing verifies that a
 // marketing agent can broadcast about "competitor pricing" without being suppressed.
 // Before the fix, "pricing" was a sales-only keyword so "competitor pricing findings"

@@ -24,6 +24,7 @@ type CodexStreamResult struct {
 	FinalMessage  string
 	LastPlainLine string
 	LastError     string
+	Usage         ClaudeUsage
 }
 
 type codexJSONEvent struct {
@@ -38,7 +39,14 @@ type codexJSONEvent struct {
 	Error       *struct {
 		Message string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
-	Item *codexJSONItem `json:"item,omitempty"`
+	Item  *codexJSONItem `json:"item,omitempty"`
+	Usage *struct {
+		InputTokens              int `json:"input_tokens,omitempty"`
+		OutputTokens             int `json:"output_tokens,omitempty"`
+		CachedInputTokens        int `json:"cached_input_tokens,omitempty"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	} `json:"usage,omitempty"`
 }
 
 type codexJSONItem struct {
@@ -107,6 +115,9 @@ func ReadCodexJSONStream(r io.Reader, onEvent func(CodexStreamEvent)) (CodexStre
 
 		state.consumeToolEvent(event, onEvent)
 		state.consumeTextDelta(event, onEvent)
+		if usage := extractCodexUsage(event); !usageIsZero(usage) {
+			result.Usage = usage
+		}
 
 		if text := strings.TrimSpace(extractCodexCompletedMessage(event)); text != "" {
 			if _, seen := state.completedMessageSet[text]; !seen {
@@ -276,6 +287,18 @@ func extractCodexError(event codexJSONEvent) string {
 	return ""
 }
 
+func extractCodexUsage(event codexJSONEvent) ClaudeUsage {
+	if event.Usage == nil {
+		return ClaudeUsage{}
+	}
+	return ClaudeUsage{
+		InputTokens:         event.Usage.InputTokens,
+		OutputTokens:        event.Usage.OutputTokens,
+		CacheReadTokens:     maxInt(event.Usage.CachedInputTokens, event.Usage.CacheReadInputTokens),
+		CacheCreationTokens: event.Usage.CacheCreationInputTokens,
+	}
+}
+
 func eventHasToolItem(event codexJSONEvent) bool {
 	return event.Item != nil && isCodexToolItemType(event.Item.Type)
 }
@@ -332,4 +355,22 @@ func truncateCodexEventText(text string, max int) string {
 		return text
 	}
 	return text[:max] + "..."
+}
+
+func maxInt(values ...int) int {
+	max := 0
+	for _, value := range values {
+		if value > max {
+			max = value
+		}
+	}
+	return max
+}
+
+func usageIsZero(usage ClaudeUsage) bool {
+	return usage.InputTokens == 0 &&
+		usage.OutputTokens == 0 &&
+		usage.CacheReadTokens == 0 &&
+		usage.CacheCreationTokens == 0 &&
+		usage.CostUSD == 0
 }

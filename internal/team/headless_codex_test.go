@@ -146,6 +146,7 @@ func TestRunHeadlessCodexTurnUsesHeadlessOfficeRuntime(t *testing.T) {
 	t.Setenv("HEADLESS_CODEX_RECORD_FILE", recordFile)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("WUPHF_API_KEY", "nex-secret-key")
+	t.Setenv("WUPHF_OPENAI_API_KEY", "openai-secret-key")
 	t.Setenv("WUPHF_ONE_SECRET", "one-secret-value")
 	t.Setenv("WUPHF_ONE_IDENTITY", "founder@example.com")
 	t.Setenv("WUPHF_ONE_IDENTITY_TYPE", "user")
@@ -196,10 +197,11 @@ func TestRunHeadlessCodexTurnUsesHeadlessOfficeRuntime(t *testing.T) {
 	if !containsEnv(record.Env, "WUPHF_AGENT_SLUG=ceo") {
 		t.Fatalf("expected agent env, got %#v", record.Env)
 	}
-	if !containsEnv(record.Env, "HOME="+os.Getenv("HOME")) {
-		t.Fatalf("expected HOME env, got %#v", record.Env)
+	wantCodexHome := filepath.Join(os.Getenv("HOME"), ".wuphf", "codex-headless")
+	if !containsEnv(record.Env, "HOME="+wantCodexHome) {
+		t.Fatalf("expected isolated HOME env, got %#v", record.Env)
 	}
-	if !containsEnv(record.Env, "CODEX_HOME="+filepath.Join(os.Getenv("HOME"), ".wuphf", "codex-headless")) {
+	if !containsEnv(record.Env, "CODEX_HOME="+wantCodexHome) {
 		t.Fatalf("expected absolute CODEX_HOME env, got %#v", record.Env)
 	}
 	if !containsEnv(record.Env, "WUPHF_HEADLESS_PROVIDER=codex") {
@@ -217,14 +219,29 @@ func TestRunHeadlessCodexTurnUsesHeadlessOfficeRuntime(t *testing.T) {
 	if !containsEnv(record.Env, "WUPHF_API_KEY=nex-secret-key") || !containsEnv(record.Env, "NEX_API_KEY=nex-secret-key") {
 		t.Fatalf("expected nex API env, got %#v", record.Env)
 	}
+	if !containsEnv(record.Env, "WUPHF_OPENAI_API_KEY=openai-secret-key") || !containsEnv(record.Env, "OPENAI_API_KEY=openai-secret-key") {
+		t.Fatalf("expected openai API env, got %#v", record.Env)
+	}
 	if !containsEnv(record.Env, "ONE_SECRET=one-secret-value") {
 		t.Fatalf("expected one secret env, got %#v", record.Env)
 	}
-	if strings.Contains(joinedArgs, l.broker.Token()) || strings.Contains(joinedArgs, "nex-secret-key") || strings.Contains(joinedArgs, "one-secret-value") {
+	if strings.Contains(joinedArgs, l.broker.Token()) || strings.Contains(joinedArgs, "nex-secret-key") || strings.Contains(joinedArgs, "openai-secret-key") || strings.Contains(joinedArgs, "one-secret-value") {
 		t.Fatalf("expected secret values to stay out of args, got %#v", record.Args)
 	}
 	if !strings.Contains(record.Stdin, "<system>") || !strings.Contains(record.Stdin, "You have new work in #launch.") {
 		t.Fatalf("expected notification prompt in stdin, got %q", record.Stdin)
+	}
+	if got := l.broker.usage.Agents["ceo"].TotalTokens; got != 174 {
+		t.Fatalf("expected recorded codex usage total 174, got %d", got)
+	}
+	if got := l.broker.usage.Agents["ceo"].InputTokens; got != 123 {
+		t.Fatalf("expected recorded input tokens 123, got %d", got)
+	}
+	if got := l.broker.usage.Agents["ceo"].CacheReadTokens; got != 45 {
+		t.Fatalf("expected recorded cached input tokens 45, got %d", got)
+	}
+	if got := l.broker.usage.Agents["ceo"].OutputTokens; got != 6 {
+		t.Fatalf("expected recorded output tokens 6, got %d", got)
 	}
 }
 
@@ -325,7 +342,11 @@ func TestRunHeadlessCodexTurnUsesAssignedWorktreeForCodingAgents(t *testing.T) {
 	if got := envValue(record.Env, "PWD"); !samePath(got, worktreeDir) {
 		t.Fatalf("expected PWD to match worktree, got %#v", record.Env)
 	}
-	if !containsEnv(record.Env, "CODEX_HOME="+filepath.Join(os.Getenv("HOME"), ".wuphf", "codex-headless")) {
+	wantCodexHome := filepath.Join(os.Getenv("HOME"), ".wuphf", "codex-headless")
+	if !containsEnv(record.Env, "HOME="+wantCodexHome) {
+		t.Fatalf("expected isolated HOME env, got %#v", record.Env)
+	}
+	if !containsEnv(record.Env, "CODEX_HOME="+wantCodexHome) {
 		t.Fatalf("expected absolute CODEX_HOME env, got %#v", record.Env)
 	}
 	if got := envValue(record.Env, "GOCACHE"); !samePath(got, filepath.Join(worktreeDir, ".wuphf", "cache", "go-build", "eng")) {
@@ -506,20 +527,34 @@ func TestHeadlessCodexHomeDirNormalizesRelativeEnv(t *testing.T) {
 }
 
 func TestPrepareHeadlessCodexHomeUsesDedicatedRuntimeHomeAndCopiesAuth(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	sourceHome := t.TempDir()
+	runtimeHome := t.TempDir()
+	t.Setenv("HOME", runtimeHome)
+	t.Setenv("WUPHF_GLOBAL_HOME", sourceHome)
 
-	sourceHome := filepath.Join(home, ".codex")
-	if err := os.MkdirAll(sourceHome, 0o755); err != nil {
+	sourceCodexHome := filepath.Join(sourceHome, ".codex")
+	if err := os.MkdirAll(sourceCodexHome, 0o755); err != nil {
 		t.Fatalf("MkdirAll source home: %v", err)
 	}
 	wantAuth := []byte(`{"access_token":"test-token"}`)
-	if err := os.WriteFile(filepath.Join(sourceHome, "auth.json"), wantAuth, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(sourceCodexHome, "auth.json"), wantAuth, 0o600); err != nil {
 		t.Fatalf("write source auth: %v", err)
+	}
+	oneDir := filepath.Join(sourceHome, ".one")
+	if err := os.MkdirAll(oneDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll one dir: %v", err)
+	}
+	wantOneConfig := []byte(`{"session":"one-test"}`)
+	if err := os.WriteFile(filepath.Join(oneDir, "config.json"), wantOneConfig, 0o600); err != nil {
+		t.Fatalf("write source one config: %v", err)
+	}
+	wantOneUpdate := []byte(`{"last_check":"2026-04-15T00:00:00Z"}`)
+	if err := os.WriteFile(filepath.Join(oneDir, "update-check.json"), wantOneUpdate, 0o600); err != nil {
+		t.Fatalf("write source one update check: %v", err)
 	}
 
 	got := prepareHeadlessCodexHome()
-	want := filepath.Join(home, ".wuphf", "codex-headless")
+	want := filepath.Join(runtimeHome, ".wuphf", "codex-headless")
 	if !samePath(got, want) {
 		t.Fatalf("expected runtime headless home %q, got %q", want, got)
 	}
@@ -529,6 +564,20 @@ func TestPrepareHeadlessCodexHomeUsesDedicatedRuntimeHomeAndCopiesAuth(t *testin
 	}
 	if string(authCopy) != string(wantAuth) {
 		t.Fatalf("expected copied auth %q, got %q", string(wantAuth), string(authCopy))
+	}
+	oneConfigCopy, err := os.ReadFile(filepath.Join(want, ".one", "config.json"))
+	if err != nil {
+		t.Fatalf("read copied one config: %v", err)
+	}
+	if string(oneConfigCopy) != string(wantOneConfig) {
+		t.Fatalf("expected copied one config %q, got %q", string(wantOneConfig), string(oneConfigCopy))
+	}
+	oneUpdateCopy, err := os.ReadFile(filepath.Join(want, ".one", "update-check.json"))
+	if err != nil {
+		t.Fatalf("read copied one update check: %v", err)
+	}
+	if string(oneUpdateCopy) != string(wantOneUpdate) {
+		t.Fatalf("expected copied one update check %q, got %q", string(wantOneUpdate), string(oneUpdateCopy))
 	}
 }
 
@@ -671,6 +720,7 @@ func TestHeadlessCodexHelperProcess(t *testing.T) {
 		t.Fatalf("missing --json arg: %#v", codexArgs)
 	}
 	_, _ = os.Stdout.WriteString("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"codex office reply\"}}\n")
+	_, _ = os.Stdout.WriteString("{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":123,\"cached_input_tokens\":45,\"output_tokens\":6}}\n")
 	os.Exit(0)
 }
 
@@ -1468,6 +1518,48 @@ func TestRecoverFailedHeadlessTurnBlocksLocalWorktreeAfterRetryExhausted(t *test
 	}
 	if !strings.Contains(updated.Details, "Selected model is at capacity") {
 		t.Fatalf("expected failure detail appended, got %+v", updated)
+	}
+}
+
+func TestRecoverFailedHeadlessTurnRequeuesExternalActionBeforeBlocking(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := NewBroker()
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Send a live Slack kickoff update and pivot to Notion if needed",
+		Details:       "Use the connected Slack target first. If it fails, pivot to the smallest useful live Notion action.",
+		Owner:         "operator",
+		CreatedBy:     "ceo",
+		TaskType:      "follow_up",
+		ExecutionMode: "office",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+
+	l := newHeadlessLauncherForTest()
+	l.broker = b
+
+	l.recoverFailedHeadlessTurn("operator", headlessCodexTurn{
+		Prompt:   "Send #task-" + strings.TrimPrefix(task.ID, "task-"),
+		Channel:  "general",
+		TaskID:   task.ID,
+		Attempts: 0,
+	}, time.Now().UTC().Add(-2*time.Second), "channel_not_found")
+
+	queue := l.headlessQueues["operator"]
+	if len(queue) != 1 {
+		t.Fatalf("expected one retry queued for external action, got %+v", queue)
+	}
+	if queue[0].Attempts != 1 {
+		t.Fatalf("expected retry attempt count 1, got %+v", queue[0])
+	}
+	if !strings.Contains(queue[0].Prompt, "live external-action task") {
+		t.Fatalf("expected external recovery prompt, got %q", queue[0].Prompt)
+	}
+	if !strings.Contains(queue[0].Prompt, "smallest useful live Notion or Drive action") {
+		t.Fatalf("expected pivot guidance in retry prompt, got %q", queue[0].Prompt)
 	}
 }
 

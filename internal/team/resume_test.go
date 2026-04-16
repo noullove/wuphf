@@ -222,6 +222,52 @@ func TestBuildResumePacketsTaggedMessageRoutesToTaggedAgent(t *testing.T) {
 	}
 }
 
+func TestBuildResumePacketsIncludesDynamicBrokerMembersOutsideLaunchPack(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	b.mu.Lock()
+	b.members = []officeMember{
+		{Slug: "ceo", Name: "CEO"},
+		{Slug: "executor", Name: "Executor"},
+		{Slug: "builder", Name: "Builder"},
+	}
+	b.channels = []teamChannel{{
+		Slug:    "youtube-factory",
+		Name:    "youtube-factory",
+		Members: []string{"ceo", "executor", "builder"},
+	}}
+	b.tasks = []teamTask{{
+		ID:        "task-44",
+		Channel:   "youtube-factory",
+		Title:     "Restore Remotion dependency path",
+		Owner:     "builder",
+		Status:    "in_progress",
+		CreatedBy: "ceo",
+	}}
+	b.mu.Unlock()
+
+	l := &Launcher{
+		broker: b,
+		pack: &agent.PackDefinition{
+			Slug:     "blank-slate",
+			LeadSlug: "ceo",
+			Agents: []agent.AgentConfig{
+				{Slug: "ceo", Name: "CEO"},
+				{Slug: "executor", Name: "Executor"},
+			},
+		},
+	}
+
+	packets := l.buildResumePackets()
+	if _, ok := packets["builder"]; !ok {
+		t.Fatalf("expected dynamic broker member outside launch pack to receive a resume packet, got %+v", packets)
+	}
+}
+
 func TestBuildResumePacketsUntaggedMessageRoutesToLead(t *testing.T) {
 	oldPathFn := brokerStatePath
 	tmpDir := t.TempDir()

@@ -24,6 +24,8 @@ type TaskTemplate struct {
 	OwnerSlug string `json:"owner_slug"`
 }
 
+const blankSlateStarterTemplateID = "__blank_slate__"
+
 // DefaultTemplates returns the generic fallback starter tasks used when no
 // blueprint-specific task list can be resolved.
 func DefaultTemplates() []TaskTemplate {
@@ -47,6 +49,16 @@ func RevOpsTemplates() []TaskTemplate {
 	}
 }
 
+func BlankSlateTemplates() []TaskTemplate {
+	return []TaskTemplate{
+		{ID: "objective", Title: "Choose the first real business win", Description: "Turn the directive into one concrete outcome for a real customer, audience, or internal operation this week.", OwnerSlug: "founder"},
+		{ID: "offer", Title: "Draft the first sellable offer", Description: "Name the customer, the promise, the scope, and the next decision needed to move the business forward.", OwnerSlug: "operator"},
+		{ID: "delivery", Title: "Build the first delivery loop", Description: "Create the minimum workflow, handoffs, approvals, and artifacts needed to deliver the offer end to end.", OwnerSlug: "builder"},
+		{ID: "instrumentation", Title: "Create the operating record", Description: "Set up the place where client state, approvals, and delivery evidence will live so the office can keep operating.", OwnerSlug: "founder"},
+		{ID: "go-live", Title: "Create missing capabilities and take the first live step", Description: "If agents, channels, skills, or tooling are missing, create them, then execute the smallest safe real action in the business workflow.", OwnerSlug: "founder"},
+	}
+}
+
 // TemplatesForPack is a legacy alias retained for older callers that still
 // talk about packs.
 func TemplatesForPack(packSlug string) []TaskTemplate {
@@ -56,6 +68,10 @@ func TemplatesForPack(packSlug string) []TaskTemplate {
 func TemplatesForSelection(repoRoot, selection string) []TaskTemplate {
 	repoRoot = resolveTemplatesRepoRoot(repoRoot)
 	selection = strings.TrimSpace(selection)
+	switch selection {
+	case blankSlateStarterTemplateID, "from-scratch", "blank-slate":
+		return BlankSlateTemplates()
+	}
 	if repoRoot != "" && selection != "" {
 		if blueprint, err := operations.LoadBlueprint(repoRoot, selection); err == nil {
 			if templates := templatesFromBlueprint(blueprint); len(templates) > 0 {

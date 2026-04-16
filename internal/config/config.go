@@ -12,6 +12,20 @@ import (
 	"strings"
 )
 
+// RuntimeHomeDir returns the home directory WUPHF should use for persisted
+// runtime state. Inventive runs may override this with WUPHF_RUNTIME_HOME so
+// they don't inherit an existing office from the user's global ~/.wuphf.
+func RuntimeHomeDir() string {
+	if v := strings.TrimSpace(os.Getenv("WUPHF_RUNTIME_HOME")); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 // Config mirrors ~/.wuphf/config.json.
 type Config struct {
 	APIKey          string `json:"api_key,omitempty"`
@@ -65,8 +79,8 @@ func (c *Config) SetActiveBlueprint(id string) {
 // ConfigPath returns the absolute path to ~/.wuphf/config.json, with a legacy
 // fallback to ~/.nex/config.json when the old file already exists.
 func ConfigPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := RuntimeHomeDir()
+	if home == "" {
 		return filepath.Join(".wuphf", "config.json")
 	}
 	newPath := filepath.Join(home, ".wuphf", "config.json")

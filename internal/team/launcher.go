@@ -45,22 +45,24 @@ const (
 	defaultNotificationPollInterval = 15 * time.Minute
 	channelRespawnDelay             = 8 * time.Second
 	ceoHeadStartDelay               = 250 * time.Millisecond
+	blankSlateLaunchSlug            = "__blank_slate__"
 )
 
 // Launcher sets up and manages the multi-agent team.
 type Launcher struct {
-	packSlug    string
-	pack        *agent.PackDefinition
-	sessionName string
-	cwd         string
-	broker      *Broker
-	mcpConfig   string
-	unsafe      bool
-	opusCEO     bool
-	focusMode   bool
-	sessionMode string
-	oneOnOne    string
-	provider    string
+	packSlug         string
+	pack             *agent.PackDefinition
+	blankSlateLaunch bool
+	sessionName      string
+	cwd              string
+	broker           *Broker
+	mcpConfig        string
+	unsafe           bool
+	opusCEO          bool
+	focusMode        bool
+	sessionMode      string
+	oneOnOne         string
+	provider         string
 
 	headlessMu           sync.Mutex
 	headlessCtx          context.Context
@@ -93,16 +95,29 @@ func (l *Launcher) SetOneOnOne(slug string) {
 	l.oneOnOne = NormalizeOneOnOneAgent(slug)
 }
 
+func isBlankSlateLaunchSlug(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "from-scratch", "blank-slate", blankSlateLaunchSlug:
+		return true
+	default:
+		return false
+	}
+}
+
 // NewLauncher creates a launcher for the given operation blueprint or legacy pack.
 func NewLauncher(packSlug string) (*Launcher, error) {
 	cfg, _ := config.Load()
 	explicitPack := packSlug != "" // true when user passed --pack explicitly
+	blankSlateLaunch := isBlankSlateLaunchSlug(packSlug) || strings.TrimSpace(os.Getenv("WUPHF_START_FROM_SCRATCH")) == "1"
+	if isBlankSlateLaunchSlug(packSlug) {
+		packSlug = ""
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
 	repoRoot := resolveRepoRoot(cwd)
-	if packSlug == "" {
+	if packSlug == "" && !blankSlateLaunch {
 		packSlug = cfg.ActiveBlueprint()
 		if packSlug == "" {
 			if manifest, err := company.LoadManifest(); err == nil {
@@ -120,10 +135,10 @@ func NewLauncher(packSlug string) (*Launcher, error) {
 		}
 	}
 	var pack *agent.PackDefinition
-	if !operationTemplateExists {
+	if !operationTemplateExists && !blankSlateLaunch {
 		pack = agent.GetPack(packSlug)
 	}
-	if pack == nil && strings.TrimSpace(packSlug) != "" && !operationTemplateExists {
+	if pack == nil && strings.TrimSpace(packSlug) != "" && !operationTemplateExists && !blankSlateLaunch {
 		return nil, fmt.Errorf("unknown pack or operation blueprint: %s", packSlug)
 	}
 
@@ -148,6 +163,7 @@ func NewLauncher(packSlug string) (*Launcher, error) {
 	return &Launcher{
 		packSlug:            packSlug,
 		pack:                pack,
+		blankSlateLaunch:    blankSlateLaunch,
 		sessionName:         SessionName,
 		cwd:                 cwd,
 		sessionMode:         sessionMode,
@@ -197,6 +213,7 @@ func (l *Launcher) Launch() error {
 	l.broker = NewBroker()
 	l.broker.runtimeProvider = l.provider
 	l.broker.packSlug = l.packSlug
+	l.broker.blankSlateLaunch = l.blankSlateLaunch
 	if err := l.broker.SetSessionMode(l.sessionMode, l.oneOnOne); err != nil {
 		return fmt.Errorf("set session mode: %w", err)
 	}
@@ -764,7 +781,19 @@ func (l *Launcher) taskNotificationContent(action officeActionLog, task teamTask
 	if path := strings.TrimSpace(task.WorktreePath); path != "" {
 		guidance = fmt.Sprintf(" If you own this task, use working_directory=%q for local file and bash tools.", path)
 	}
-	return fmt.Sprintf("[%s #%s on #%s]: %s%s (owner %s, status %s%s%s%s%s). Context is included — do NOT call team_poll or team_tasks. Respond with the concrete next step immediately. Stay in your lane. Once you have posted the needed update, STOP and wait for the next pushed notification.%s", verb, task.ID, channel, task.Title, details, owner, status, pipeline, review, execMode, worktree, guidance)
+	framing := ""
+	if taskRequiresRealExternalExecution(&task) {
+		framing = " Live business framing: describe the work as a client deliverable, approval, handoff, update, or record. Do not present it as a proof marker, eval artifact, or test artifact unless the task explicitly asks for testing or evidence capture."
+	}
+	capability := ""
+	if taskRequiresRealExternalExecution(&task) {
+		capability = "\n" + capabilityGapCoachingBlock()
+	}
+	hygiene := ""
+	if taskLooksLikeLiveBusinessObjective(&task) {
+		hygiene = "\n" + taskHygieneCoachingBlock()
+	}
+	return fmt.Sprintf("[%s #%s on #%s]: %s%s (owner %s, status %s%s%s%s%s). Context is included — do NOT call team_poll or team_tasks. Respond with the concrete next step immediately. Stay in your lane. Once you have posted the needed update, STOP and wait for the next pushed notification.%s%s%s%s", verb, task.ID, channel, task.Title, details, owner, status, pipeline, review, execMode, worktree, guidance, framing, capability, hygiene)
 }
 
 func (l *Launcher) sendTaskUpdate(target notificationTarget, action officeActionLog, task teamTask, content string) {
@@ -1095,16 +1124,16 @@ func (l *Launcher) captureDeadChannelPane(status string) error {
 }
 
 func channelStderrLogPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := config.RuntimeHomeDir()
+	if home == "" {
 		return ".wuphf-channel-stderr.log"
 	}
 	return filepath.Join(home, ".wuphf", "logs", "channel-stderr.log")
 }
 
 func channelPaneSnapshotPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := config.RuntimeHomeDir()
+	if home == "" {
 		return ".wuphf-channel-pane.log"
 	}
 	return filepath.Join(home, ".wuphf", "logs", "channel-pane.log")
@@ -1282,11 +1311,27 @@ func (l *Launcher) processDueTaskJob(job schedulerJob) {
 		_ = l.broker.UpdateSchedulerJobState(job.Slug, time.Time{}, "done")
 		return
 	}
+	now := time.Now().UTC()
 	// Blocked tasks are legitimately waiting on dependencies — skip the watchdog
 	// reminder entirely. The owner cannot act until their blockers resolve, so a
 	// "still waiting" nudge is both misleading and a wasted token spend. The
 	// task_unblocked mechanism will wake them when deps clear.
 	if task.Blocked {
+		if retryAt, rateLimited := externalWorkflowRetryAfter(errors.New(task.Details), now); rateLimited && !retryAt.After(now) {
+			resumeNote := "Retry window passed; resuming live external lane automatically."
+			resumed, changed, err := l.broker.ResumeTask(task.ID, "watchdog", resumeNote)
+			if err == nil && changed {
+				_ = l.broker.UpdateSchedulerJobState(job.Slug, time.Time{}, "done")
+				l.deliverTaskNotification(officeActionLog{
+					Kind:      "task_unblocked",
+					Source:    "watchdog",
+					Channel:   resumed.Channel,
+					Actor:     "watchdog",
+					RelatedID: resumed.ID,
+				}, resumed)
+				return
+			}
+		}
 		nextRun := time.Now().UTC().Add(time.Duration(config.ResolveTaskReminderInterval()) * time.Minute)
 		_ = l.broker.UpdateSchedulerJobState(job.Slug, nextRun, "scheduled")
 		return
@@ -2077,7 +2122,11 @@ func (l *Launcher) buildTaskNotificationContext(channel, slug string, limit int)
 		if len(task.DependsOn) > 0 {
 			meta += ", depends: " + strings.Join(task.DependsOn, " ")
 		}
-		line := fmt.Sprintf("- #%s %s (%s)", task.ID, truncate(task.Title, 72), meta)
+		taskChannel := normalizeChannelSlug(task.Channel)
+		if taskChannel == "" {
+			taskChannel = "general"
+		}
+		line := fmt.Sprintf("- #%s on #%s %s (%s)", task.ID, taskChannel, truncate(task.Title, 72), meta)
 		if details := strings.TrimSpace(task.Details); details != "" {
 			line += ": " + truncate(details, 96)
 		}
@@ -2196,7 +2245,7 @@ func (l *Launcher) responseInstructionForTarget(msg channelMessage, slug string)
 		if !isFromHuman {
 			return fmt.Sprintf("You are @%s. A specialist just finished a lane. If the build is still underway, any task is open or in review, or the next lane is obvious, act now: approve/release review items, create the next owned team_task records, and only then stop. On a human build/ship/end-to-end request, if you approve or close an engineering/execution slice and the product is not yet runnable end to end, you MUST leave at least one engineering or execution lane active before you stop; do not let the company drift into GTM-only, rubric-only, or evaluation-only work while the build is still incomplete. Before you say a task is approved, closed, back in progress, reassigned, or blocked, you MUST make the matching team_task or team_plan call first; channel narration alone does not change durable state. If the task mutation fails, say that it failed and do not claim the state changed. Before creating any new task, inspect Active tasks in this packet: if a live task already covers that lane, reuse or update that task instead of creating an overlapping duplicate with a new title. Stay quiet only when the human already has what they need AND there is no remaining office work or obvious follow-up.", slug)
 		}
-		return fmt.Sprintf("You are @%s. Give the first top-level reply quickly, then pull in specialists only when needed. For build/ship/end-to-end requests, the first engineering task itself must be a single smallest runnable feature slice, not an MVP umbrella or a multi-output minimum bar. Do not put a separate repo audit, architecture, or cut-line research task in front of that first feature unless the human explicitly asked for analysis first or the repo truly has no identifiable implementation target. Do not spend the whole first turn on `pwd`, `ls`, `rg --files`, `find .`, or another repo-wide inventory; use the named docs/configs in the packet or at most one or two targeted reads, then create the first durable task/channel state in that same turn.", slug)
+		return fmt.Sprintf("You are @%s. Give the first top-level reply quickly, then pull in specialists only when needed. For build/ship/end-to-end requests, the first engineering task itself must be a single smallest runnable feature slice, not an MVP umbrella or a multi-output minimum bar. Do not put a separate repo audit, architecture, or cut-line research task in front of that first feature unless the human explicitly asked for analysis first or the repo truly has no identifiable implementation target. Do not spend the whole first turn on `pwd`, `ls`, `rg --files`, `find .`, or another repo-wide inventory; use the named docs/configs in the packet or at most one or two targeted reads, then create the first durable task/channel state in that same turn. %s", slug, capabilityGapCoachingBlock())
 	}
 	// DMs are direct conversations: the human chose to message this agent
 	// specifically. Always respond, regardless of @tags or task ownership.
@@ -2212,7 +2261,7 @@ func (l *Launcher) responseInstructionForTarget(msg channelMessage, slug string)
 	}
 	if task, ok := l.relevantTaskForTarget(msg, slug); ok && strings.TrimSpace(task.Owner) == slug {
 		if taskRequiresRealExternalExecution(&task) {
-			return fmt.Sprintf("You are @%s. You already own matching work that requires a real connected-system action. Take the smallest allowed live external step now or report a blocker; repo docs, previews, and local markdown do not satisfy it.", slug)
+			return fmt.Sprintf("You are @%s. You already own matching work that requires a real connected-system action. Take the smallest allowed live external step now or report a blocker; repo docs, previews, local markdown, proof markers, and test artifacts do not satisfy it. Frame the result as a business deliverable, approval, handoff, or record, not as an eval or proof artifact. %s %s", slug, capabilityGapCoachingBlock(), taskHygieneCoachingBlock())
 		}
 		return fmt.Sprintf("You are @%s. You already own matching work. Reply only with concrete progress or a blocker; do not re-triage the thread.", slug)
 	}
@@ -2371,6 +2420,7 @@ func (l *Launcher) buildTaskExecutionPacket(slug string, action officeActionLog,
 	} else {
 		lines = append(lines, fmt.Sprintf("- Channel: #%s", channel))
 	}
+	lines = append(lines, fmt.Sprintf("- Mutation channel: use #%s when claiming or completing #%s", channel, task.ID))
 	if path := strings.TrimSpace(task.WorktreePath); path != "" {
 		lines = append(lines, fmt.Sprintf("- Working directory: %q", path))
 	}
@@ -2388,9 +2438,14 @@ func (l *Launcher) buildTaskExecutionPacket(slug string, action officeActionLog,
 		lines = append(lines, "Deliverable rule: a local_worktree feature task is not satisfied by another plan, architecture memo, or audit summary unless the packet explicitly says research-only. Land code, scripts, docs for the runnable slice, or a concrete task-state blocker.")
 	}
 	if taskRequiresRealExternalExecution(&task) {
-		lines = append(lines, "External execution rule: this task names a connected external system and expects a real action there. Use the live integration/workflow path for the smallest allowed step now instead of producing another repo doc or internal package first.")
-		lines = append(lines, "Evidence rule: a local markdown file, preview note, or repo artifact does NOT satisfy this task unless the packet explicitly says preview/mock/stub-only. Leave durable external evidence through the broker-integrated workflow/integration path before marking the task review-ready, done, or blocked.")
+		lines = append(lines, "External execution rule: this task names a connected external system and expects a real action there. Use the live integration/workflow path for the smallest allowed step now instead of producing another repo doc, proof marker, or internal package first.")
+		lines = append(lines, "Evidence rule: a local markdown file, preview note, repo artifact, or test output does NOT satisfy this task unless the packet explicitly says preview/mock/stub-only. Leave durable external evidence through the broker-integrated workflow/integration path before marking the task review-ready, done, or blocked.")
+		lines = append(lines, "Business framing: describe the work as a client deliverable, approval, handoff, update, or record. Avoid proof/marker/test/eval language unless the task explicitly asks for testing or evidence capture.")
 		lines = append(lines, "Pace rule: do the smallest safe external step first, then summarize it. Do not spend this turn building extra kickoff decks, review bundles, or substitute proof artifacts if the connected system action is already allowed.")
+		lines = append(lines, capabilityGapCoachingBlock())
+	}
+	if taskLooksLikeLiveBusinessObjective(&task) {
+		lines = append(lines, "Task hygiene rule: if this lane drifts into a proof packet, review bundle, blueprint-derived scaffold, rubric, or other internal artifact shell, rewrite it immediately into either the next real deliverable step or the exact capability-enablement task that will unlock that deliverable.")
 	}
 	// Walk up from task.ThreadID to the ultimate thread root (the original human ask)
 	// so agents see the full ancestry, not just a mid-thread branch. The thread root
@@ -2486,8 +2541,8 @@ func ClearPersistedBrokerState() error {
 }
 
 func officePIDFilePath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := config.RuntimeHomeDir()
+	if home == "" {
 		return filepath.Join(".wuphf", "team", "office.pid")
 	}
 	return filepath.Join(home, ".wuphf", "team", "office.pid")
@@ -2905,7 +2960,10 @@ func (l *Launcher) buildPrompt(slug string) string {
 		sb.WriteString("16. If a task lands in review but no human approval is actually needed, approve it or immediately translate it into the next task. Do not leave the company idle behind an internal review gate.\n")
 		sb.WriteString("16b. Before you write any sentence claiming a task is approved, closed, reopened, reassigned, or blocked, you MUST make the matching team_task or team_plan call first. Channel narration does not mutate durable task state. If the mutation fails, say it failed and do not claim success.\n")
 		sb.WriteString("16c. On a human build/ship/end-to-end request, after you approve or close any engineering/execution slice, if the system is not yet runnable end to end and no engineering/execution lane remains active, create the next engineering/execution task in that same turn before you stop. Do not replace the only live build lane with GTM-only packaging, eval prompts, scoring rubrics, or other sidecar work.\n")
-		sb.WriteString("16d. When a task or policy allows a low-risk external step on a connected system, prefer the smallest real external action now over more internal collateral. A Slack/Notion/Drive lane is not satisfied by repo markdown, preview notes, or substitute proof artifacts unless the task explicitly says mock/preview/stub-only.\n")
+		sb.WriteString("16d. When a task or policy allows a low-risk external step on a connected system, prefer the smallest real external action now over more internal collateral. A Slack/Notion/Drive lane is not satisfied by repo markdown, preview notes, proof markers, or substitute proof artifacts unless the task explicitly says mock/preview/stub-only.\n")
+		sb.WriteString("16e. When the work is live, describe outputs as client deliverables, approvals, handoffs, updates, or records. Do not frame live business work as proof/test/eval artifacts unless the task explicitly asks for testing or evidence capture.\n")
+		sb.WriteString("16f. Capability-gap rule: if the work is blocked because the needed specialist, channel, skill, or tool path does not exist yet, treat that gap as the next real work item. Do not fall back to a review bundle, proof packet, artifact shell, or local substitute deliverable. Create the missing specialist with team_member first; if the work will span more than one turn, create the missing execution channel with team_channel; propose or update the missing skill block in the same turn; and if the blocker is a tool or provider gap, open a tool-discovery/research lane named for the exact tool you need so the office can discover, validate, and enable it. Example: if the work needs video generation and you do not already have a usable path, create a discovery lane for Remotion or the exact video tool before drafting any deliverable shell.\n")
+		sb.WriteString("16g. Task hygiene rule: if a live business lane gets named or reframed as a review packet, proof artifact, blueprint-derived scaffold, rubric, or other internal shell, rewrite that lane in the same turn. Replace it with either the next real deliverable/customer-facing/business-facing step or the exact capability-enablement task that unblocks that step.\n")
 		sb.WriteString("17. Create channels (team_channel) or agents (team_member) when the human asks or scope genuinely warrants it. For cross-functional initiatives that will run beyond one decision cycle, create a dedicated execution channel and keep #general for top-level decisions.\n")
 		sb.WriteString("17b. When the human explicitly asks to add or test integrations, generated skills, reusable workflows, or generated agents, you MUST leave durable state for that work in the same turn. Create the integration/onboarding task lane(s), propose or update the relevant skill block(s), and create any needed specialist agent(s) instead of only describing them narratively. If real accounts, credentials, spend, publishing, or other external side effects would be required, proceed with stubs/placeholders until the exact human approval is truly needed.\n")
 		sb.WriteString("18. Sequence structural changes safely: create a new specialist with team_member first, wait for success, then add them to channels or tag them. When creating a new channel, only include members that already exist.\n")
@@ -2998,8 +3056,11 @@ func (l *Launcher) buildPrompt(slug string) string {
 		sb.WriteString("10. For local_worktree feature tasks, do NOT start with `rg --files`, `find .`, or a repo-wide audit. Read only the few files directly tied to the requested slice, then start editing. If the task is broad or lists multiple outputs, narrow it yourself to one exact smallest runnable slice, post a `team_status` naming that cut line, and ship that slice now.\n")
 		sb.WriteString("10b. Never search parent or sibling directories outside the assigned working_directory (`find ..`, `rg ..`, `/var/folders`, `TMPDIR`, `TemporaryItems`, or other task worktrees). If you need instructions, read `AGENTS.md` or `README.md` inside the assigned worktree only.\n")
 		sb.WriteString("11. Ignore unrelated modified or untracked files already present in the assigned worktree unless they are directly needed for your slice. They may be preexisting repo state; do not audit or re-explain them.\n")
-		sb.WriteString("11b. If a task names a connected external system and asks you to create, post, query, or run something there, do that live external step through the connected workflow/integration path. Repo docs, previews, or local markdown do not count unless the task explicitly says mock/preview/stub-only.\n")
-		sb.WriteString("11c. When a task calls for Slack, Notion, Drive, or another connected system, use the `team_action_*` tools first. Do NOT probe localhost broker routes, curl the provider directly, or fall back to shell-side API experiments when the office action tools can do the job.\n")
+		sb.WriteString("11b. If a task names a connected external system and asks you to create, post, query, or run something there, do that live external step through the connected workflow/integration path. Repo docs, previews, local markdown, proof markers, or test artifacts do not count unless the task explicitly says mock/preview/stub-only.\n")
+		sb.WriteString("11c. When the work is live, phrase it as a client deliverable, approval, handoff, update, or record. Avoid proof/test/marker/eval language unless the task explicitly asks for testing or evidence capture.\n")
+		sb.WriteString("11d. When a task calls for Slack, Notion, Drive, or another connected system, use the `team_action_*` tools first. Do NOT probe localhost broker routes, curl the provider directly, or fall back to shell-side API experiments when the office action tools can do the job.\n")
+		sb.WriteString("11e. Capability-gap rule: if the work is blocked because the needed specialist, channel, skill, or tool path does not exist yet, treat that gap as the next real work item. Do not fall back to a review bundle, proof packet, artifact shell, or local substitute deliverable. Create the missing specialist with team_member first; if the work will span more than one turn, create the missing execution channel with team_channel; propose or update the missing skill block in the same turn; and if the blocker is a tool or provider gap, open a tool-discovery/research lane named for the exact tool you need so the office can discover, validate, and enable it. Example: if the work needs video generation and you do not already have a usable path, create a discovery lane for Remotion or the exact video tool before drafting any deliverable shell.\n")
+		sb.WriteString("11f. Task hygiene rule: if a live business lane gets named or reframed as a review packet, proof artifact, blueprint-derived scaffold, rubric, or other internal shell, rewrite that lane in the same turn. Replace it with either the next real deliverable/customer-facing/business-facing step or the exact capability-enablement task that unblocks that step.\n")
 		if noNex {
 			sb.WriteString("12. Don't fake outside memory. Surface uncertainty in-channel and keep outcomes explicit in-thread.\n")
 			sb.WriteString("13. Once you have posted the needed update for the current packet, stop. A later pushed notification will wake you again if more is needed.\n\n")
@@ -3615,6 +3676,7 @@ func (l *Launcher) LaunchWeb(webPort int) error {
 	l.broker = NewBroker()
 	l.broker.runtimeProvider = l.provider
 	l.broker.packSlug = l.packSlug
+	l.broker.blankSlateLaunch = l.blankSlateLaunch
 	if err := l.broker.SetSessionMode(l.sessionMode, l.oneOnOne); err != nil {
 		return fmt.Errorf("set session mode: %w", err)
 	}
@@ -3640,6 +3702,7 @@ func (l *Launcher) LaunchWeb(webPort int) error {
 	// Web mode always uses queued headless turns so notifications can push
 	// scoped work directly instead of relying on long-lived agents polling.
 	l.headlessCtx, l.headlessCancel = context.WithCancel(context.Background())
+	l.resumeInFlightWork()
 
 	go l.notifyAgentsLoop()
 	go l.notifyTaskActionsLoop()

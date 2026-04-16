@@ -101,6 +101,32 @@ func TestAgentPaneSlugsOneOnOneUsesOnlySelectedAgent(t *testing.T) {
 	}
 }
 
+func TestNewLauncherFromScratchUsesGenericOffice(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WUPHF_START_FROM_SCRATCH", "1")
+
+	l, err := NewLauncher("from-scratch")
+	if err != nil {
+		t.Fatalf("NewLauncher(from-scratch): %v", err)
+	}
+	if got := l.PackName(); got != "WUPHF Office" {
+		t.Fatalf("PackName: got %q, want %q", got, "WUPHF Office")
+	}
+	if got := l.AgentCount(); got != 4 {
+		t.Fatalf("AgentCount: got %d, want 4", got)
+	}
+	got := l.officeMembersSnapshot()
+	want := []string{"founder", "operator", "builder", "reviewer"}
+	if len(got) != len(want) {
+		t.Fatalf("officeMembersSnapshot: got %d members, want %d (%+v)", len(got), len(want), got)
+	}
+	for i, slug := range want {
+		if got[i].Slug != slug {
+			t.Fatalf("member[%d]: got %q, want %q", i, got[i].Slug, slug)
+		}
+	}
+}
+
 func TestAgentPaneSlugsUsesOfficeRosterNotStaticPack(t *testing.T) {
 	l := &Launcher{
 		pack: &agent.PackDefinition{
@@ -994,11 +1020,23 @@ func TestBuildTaskExecutionPacketRequiresRealExternalExecution(t *testing.T) {
 	if !strings.Contains(got, "real action there") {
 		t.Fatalf("expected external execution rule in packet: %q", got)
 	}
-	if !strings.Contains(got, "local markdown file, preview note, or repo artifact does NOT satisfy this task") {
+	if !strings.Contains(got, "local markdown file, preview note, repo artifact, or test output does NOT satisfy this task") {
 		t.Fatalf("expected external evidence rule in packet: %q", got)
 	}
 	if !strings.Contains(got, "smallest safe external step first") {
 		t.Fatalf("expected pace rule in packet: %q", got)
+	}
+	if !strings.Contains(got, "Capability-gap rule: if the work is blocked because the needed specialist, channel, skill, or tool path does not exist yet") {
+		t.Fatalf("expected capability-gap coaching in packet: %q", got)
+	}
+	if !strings.Contains(got, "create the missing specialist with team_member first") {
+		t.Fatalf("expected specialist-creation guidance in packet: %q", got)
+	}
+	if !strings.Contains(got, "open a tool-discovery/research lane named for the exact tool you need") {
+		t.Fatalf("expected tool-discovery guidance in packet: %q", got)
+	}
+	if !strings.Contains(got, "if this lane drifts into a proof packet, review bundle, blueprint-derived scaffold") {
+		t.Fatalf("expected task-hygiene guidance in packet: %q", got)
 	}
 }
 
@@ -1051,6 +1089,9 @@ func TestBuildPromptIncludesTaskStatusAndWorktreeGuidance(t *testing.T) {
 	if !strings.Contains(specialist, "Never launch another WUPHF office") {
 		t.Fatalf("expected nested office warning in specialist prompt: %q", specialist)
 	}
+	if !strings.Contains(specialist, "Capability-gap rule: if the work is blocked because the needed specialist, channel, skill, or tool path does not exist yet") {
+		t.Fatalf("expected capability-gap guidance in specialist prompt: %q", specialist)
+	}
 
 	lead := l.buildPrompt("ceo")
 	if !strings.Contains(lead, "team_task_status") {
@@ -1091,6 +1132,83 @@ func TestBuildPromptIncludesTaskStatusAndWorktreeGuidance(t *testing.T) {
 	}
 	if !strings.Contains(lead, "if the system is not yet runnable end to end and no engineering/execution lane remains active, create the next engineering/execution task in that same turn before you stop") {
 		t.Fatalf("expected lead prompt to require a continuing engineering lane on build requests: %q", lead)
+	}
+	if !strings.Contains(lead, "Capability-gap rule: if the work is blocked because the needed specialist, channel, skill, or tool path does not exist yet") {
+		t.Fatalf("expected capability-gap guidance in lead prompt: %q", lead)
+	}
+	if !strings.Contains(lead, "team_member first") || !strings.Contains(lead, "team_channel") || !strings.Contains(lead, "tool-discovery/research lane named for the exact tool you need") {
+		t.Fatalf("expected concrete capability-creation instructions in lead prompt: %q", lead)
+	}
+	if !strings.Contains(lead, "if a live business lane gets named or reframed as a review packet, proof artifact, blueprint-derived scaffold") {
+		t.Fatalf("expected task-hygiene guidance in lead prompt: %q", lead)
+	}
+}
+
+func TestResponseInstructionForTargetLiveExternalTaskPromptsCapabilityCreation(t *testing.T) {
+	b := &Broker{
+		tasks: []teamTask{{
+			ID:       "task-1",
+			Channel:  "general",
+			Title:    "Notion client handoff",
+			Details:  "Create the live Notion record in the connected workspace.",
+			Owner:    "builder",
+			Status:   "in_progress",
+			ThreadID: "msg-1",
+		}},
+	}
+	task := b.tasks[0]
+	if !taskRequiresRealExternalExecution(&task) {
+		t.Fatalf("expected live external task classification")
+	}
+
+	l := &Launcher{
+		broker: b,
+		pack: &agent.PackDefinition{
+			LeadSlug: "ceo",
+			Agents: []agent.AgentConfig{
+				{Slug: "ceo", Name: "CEO"},
+				{Slug: "builder", Name: "Builder"},
+			},
+		},
+	}
+
+	got := l.responseInstructionForTarget(channelMessage{ID: "msg-1", From: "you", Channel: "general"}, "builder")
+	if !strings.Contains(got, "real connected-system action") {
+		t.Fatalf("expected live external instruction: %q", got)
+	}
+	if !strings.Contains(got, "Capability-gap rule: if the work is blocked because the needed specialist, channel, skill, or tool path does not exist yet") {
+		t.Fatalf("expected capability-gap guidance in live external instruction: %q", got)
+	}
+	if !strings.Contains(got, "create the missing specialist with team_member first") {
+		t.Fatalf("expected specialist-creation guidance in live external instruction: %q", got)
+	}
+	if !strings.Contains(got, "if a live business lane gets named or reframed as a review packet, proof artifact, blueprint-derived scaffold") {
+		t.Fatalf("expected task-hygiene guidance in live external instruction: %q", got)
+	}
+}
+
+func TestTaskNotificationContentIncludesCapabilityGapRecovery(t *testing.T) {
+	l := &Launcher{}
+	got := l.taskNotificationContent(officeActionLog{
+		Kind:  "task_updated",
+		Actor: "ceo",
+	}, teamTask{
+		ID:            "task-99",
+		Channel:       "delivery",
+		Title:         "Create the live Slack and Notion handoff",
+		Details:       "Use the connected Slack workspace and Notion page to publish the deliverable.",
+		Owner:         "builder",
+		Status:        "in_progress",
+		ExecutionMode: "office",
+	})
+	if !strings.Contains(got, "Capability-gap rule: if the work is blocked because the needed specialist, channel, skill, or tool path does not exist yet") {
+		t.Fatalf("expected capability-gap guidance in notification content: %q", got)
+	}
+	if !strings.Contains(got, "create the missing execution channel with team_channel") {
+		t.Fatalf("expected execution-channel guidance in notification content: %q", got)
+	}
+	if !strings.Contains(got, "Remotion") {
+		t.Fatalf("expected exact-tool example in notification content: %q", got)
 	}
 }
 
@@ -2354,6 +2472,59 @@ done:
 	}
 	if !hasMarketing {
 		t.Error("marketing should be in immediate targets after task_unblocked")
+	}
+}
+
+func TestProcessDueTaskJobResumesRateLimitedBlockedTask(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	b.mu.Lock()
+	b.members = []officeMember{
+		{Slug: "ceo", Name: "CEO"},
+		{Slug: "builder", Name: "Builder"},
+	}
+	b.channels = []teamChannel{{
+		Slug:    "client-loop",
+		Name:    "client-loop",
+		Members: []string{"ceo", "builder"},
+	}}
+	b.mu.Unlock()
+
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "client-loop",
+		Title:         "Retry kickoff send",
+		Details:       "429 RESOURCE_EXHAUSTED. Retry after 2026-04-15T22:00:29.610Z.",
+		Owner:         "builder",
+		CreatedBy:     "ceo",
+		TaskType:      "follow_up",
+		ExecutionMode: "live_external",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+	if _, changed, err := b.BlockTask(task.ID, "ceo", "Provider cooldown"); err != nil || !changed {
+		t.Fatalf("block task: %v changed=%v", err, changed)
+	}
+
+	l := &Launcher{broker: b, sessionName: "test"}
+	l.processDueTaskJob(schedulerJob{
+		Slug:       normalizeSchedulerSlug("recheck", "client-loop", "task", task.ID),
+		Kind:       "recheck",
+		TargetType: "task",
+		TargetID:   task.ID,
+		Channel:    "client-loop",
+	})
+
+	resumed, ok := b.FindTask("client-loop", task.ID)
+	if !ok {
+		t.Fatal("expected resumed task to still exist")
+	}
+	if resumed.Blocked || resumed.Status != "in_progress" {
+		t.Fatalf("expected blocked task to resume after retry window, got %+v", resumed)
 	}
 }
 

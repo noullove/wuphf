@@ -1,6 +1,9 @@
 package team
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 type taskPipelineTemplate struct {
 	ID             string
@@ -49,7 +52,8 @@ func taskNeedsStructuredReview(task *teamTask) bool {
 	if task == nil {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+	if strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") ||
+		strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "live_external") {
 		return true
 	}
 	template := pipelineTemplate(task.TaskType)
@@ -60,6 +64,10 @@ func taskNeedsStructuredReview(task *teamTask) bool {
 }
 
 func taskDefaultExecutionMode(owner, taskType, title, details string) string {
+	task := &teamTask{Owner: owner, TaskType: taskType, Title: title, Details: details}
+	if taskRequiresRealExternalExecution(task) {
+		return "live_external"
+	}
 	switch strings.TrimSpace(strings.ToLower(taskType)) {
 	case "feature", "bugfix", "incident":
 		if taskWorkRequiresLocalExecution(owner, title, details) {
@@ -106,10 +114,29 @@ func normalizeTaskPlan(task *teamTask) {
 	if strings.TrimSpace(task.Status) == "review" {
 		task.ReviewState = "ready_for_review"
 	}
-	if strings.TrimSpace(task.Status) == "done" && task.ReviewState == "pending_review" {
+	if strings.TrimSpace(task.Status) == "done" &&
+		(task.ReviewState == "pending_review" || task.ReviewState == "ready_for_review") {
 		task.ReviewState = "approved"
 	}
 	task.PipelineStage = taskStageForStatus(task)
+}
+
+func requestIsResolvedLocked(requests []humanInterview, requestID string) bool {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return false
+	}
+	for _, req := range requests {
+		if strings.TrimSpace(req.ID) != requestID {
+			continue
+		}
+		if req.Answered != nil {
+			return true
+		}
+		status := strings.ToLower(strings.TrimSpace(req.Status))
+		return status == "answered" || status == "canceled" || status == "cancelled"
+	}
+	return false
 }
 
 func containsAnyTaskFragment(text string, needles ...string) bool {
@@ -165,4 +192,77 @@ func taskRequiresRealExternalExecution(task *teamTask) bool {
 		"handoff", "proof artifact", "page", "doc", "document", "message",
 		"database", "workflow", "fan-out", "fanout",
 	)
+}
+
+func taskHasMockPreviewStubTestingIntent(task *teamTask) bool {
+	if task == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{task.Channel, task.Owner, task.Title, task.Details, task.TaskType, task.PipelineID, task.ExecutionMode}, " ")))
+	if text == "" {
+		return false
+	}
+	return containsAnyTaskFragment(text,
+		"mock", "preview", "stub", "test", "testing",
+		"dry run", "dry-run", "sandbox", "simulate", "simulation",
+	)
+}
+
+func taskLooksLikeInternalTheater(task *teamTask) bool {
+	if task == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{task.Channel, task.Owner, task.Title, task.Details, task.TaskType, task.PipelineID, task.ExecutionMode}, " ")))
+	if text == "" {
+		return false
+	}
+	return containsAnyTaskFragment(text,
+		"proof artifact", "proof packet", "proof page", "review bundle", "review packet",
+		"local artifact", "preview packet", "artifact theater", "eval", "evaluation",
+		"blueprint-derived scaffolding", "blueprint derived scaffolding",
+		"scaffolding", "scaffold", "rubric", "scorecard", "smoke test",
+		"handoff packet", "delivery packet",
+		"artifact path", "local path", "reviewable artifact", "reviewable bundle",
+		"source-of-truth artifact", "source of truth artifact",
+		"blueprint.yaml", "updated blueprint", "template review packet",
+	)
+}
+
+func taskLooksLikeLiveBusinessObjective(task *teamTask) bool {
+	if task == nil {
+		return false
+	}
+	if taskRequiresRealExternalExecution(task) {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{task.Channel, task.Owner, task.Title, task.Details, task.TaskType, task.PipelineID, task.ExecutionMode}, " ")))
+	if text == "" {
+		return false
+	}
+	return containsAnyTaskFragment(text,
+		"launch", "go live", "go-live",
+		"end to end", "end-to-end",
+		"client", "customer", "customer-facing", "client-facing",
+		"revenue", "sales", "deliverable", "publish", "ship", "deploy",
+		"production", "live external", "real external", "business objective",
+		"client-delivery", "delivery", "fulfillment", "customer-success",
+		"marketing", "growth", "publishing", "publish", "content",
+		"website", "landing page", "offer", "youtube", "video", "script",
+	)
+}
+
+func rejectTheaterTaskForLiveBusiness(task *teamTask) error {
+	if task == nil {
+		return nil
+	}
+	if !taskLooksLikeLiveBusinessObjective(task) {
+		return nil
+	}
+	if taskHasMockPreviewStubTestingIntent(task) {
+		return nil
+	}
+	if !taskLooksLikeInternalTheater(task) {
+		return nil
+	}
+	return fmt.Errorf("live business task cannot be framed as proof/test/review-bundle/local-artifact theater; mark it mock/preview/stub/testing if that is intentional")
 }

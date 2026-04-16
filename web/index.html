@@ -1472,6 +1472,55 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
 .live-work-card-dot.blocked { background: var(--yellow); }
 .live-work-card-agent { font-weight: 600; color: var(--text); font-size: 11px; }
 .live-work-card-task { color: var(--text-secondary); max-width: 140px; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+.live-work-card-meta { display: inline-flex; align-items: center; gap: 6px; color: var(--text-tertiary); font-size: 10px; }
+.live-work-card-channel { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: var(--radius-full); background: var(--bg); border: 1px solid var(--border); font-size: 10px; color: var(--text-tertiary); }
+.live-work-card-tokens { margin-left: auto; color: var(--accent); font-family: var(--font-mono); font-size: 10px; }
+.live-work-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; padding-bottom: 6px; }
+.live-work-lane { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; transition: all 0.12s; }
+.live-work-lane:hover { border-color: var(--accent); box-shadow: 0 4px 12px rgba(59,47,47,0.08); }
+.live-work-lane-header { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.live-work-lane-owner { font-weight: 600; color: var(--text); font-size: 12px; }
+.live-work-lane-title { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
+.live-work-lane-submeta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10px; color: var(--text-tertiary); }
+.live-work-lane-status { display: inline-flex; align-items: center; padding: 2px 6px; border-radius: var(--radius-full); font-size: 10px; font-weight: 600; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.03em; }
+.live-work-lane-status.in_progress { background: var(--blue-bg); color: var(--blue); }
+.live-work-lane-status.review { background: var(--yellow-bg); color: var(--yellow); }
+.live-work-lane-status.blocked { background: var(--red-bg); color: var(--red); }
+.live-work-lane-status.open { background: var(--bg); color: var(--text-tertiary); border: 1px solid var(--border); }
+
+.activity-shell { padding: 20px; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; height: 100%; }
+.activity-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.activity-hero-title { font-size: 18px; font-weight: 600; color: var(--text); }
+.activity-hero-copy { font-size: 13px; color: var(--text-secondary); max-width: 720px; line-height: 1.5; }
+.activity-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.activity-stat-card { padding: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); display: flex; flex-direction: column; gap: 4px; }
+.activity-stat-kicker { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); font-weight: 600; }
+.activity-stat-value { font-size: 22px; font-weight: 700; color: var(--text); font-family: var(--font-mono); }
+.activity-stat-copy { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
+.activity-grid { display: grid; grid-template-columns: 1.2fr 0.9fr; gap: 16px; }
+.activity-column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.activity-section { padding: 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); display: flex; flex-direction: column; gap: 10px; }
+.activity-section-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.activity-section-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.activity-section-meta { font-size: 11px; color: var(--text-tertiary); }
+.activity-list { display: flex; flex-direction: column; gap: 8px; }
+.activity-item { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border-light); border-radius: var(--radius-md); }
+.activity-item-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.activity-item-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.activity-item-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
+.activity-item-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 10px; color: var(--text-tertiary); }
+.activity-kind-pill { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: var(--radius-full); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg); border: 1px solid var(--border); color: var(--text-tertiary); }
+.activity-kind-pill.warning { background: var(--yellow-bg); color: var(--yellow); border-color: transparent; }
+.activity-kind-pill.danger { background: var(--red-bg); color: var(--red); border-color: transparent; }
+.activity-kind-pill.good { background: var(--green-bg); color: var(--green); border-color: transparent; }
+.activity-agent-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg); }
+.activity-agent-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.activity-agent-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.activity-agent-stream { font-size: 11px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; }
+.activity-empty { font-size: 12px; color: var(--text-tertiary); padding: 8px 0; }
+@media (max-width: 1100px) {
+  .activity-grid { grid-template-columns: 1fr; }
+}
 
 /* ─── Notice / Toast ─── */
 .notice-container { position: fixed; top: 16px; right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
@@ -1910,10 +1959,10 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
         <div class="wizard-hero">
           <div class="wizard-eyebrow">
             <span class="status-dot active pulse"></span>
-            The AI startup Ryan Howard always wished WUPHF.com could be
+            Start a real office from a blank slate or a preset launch mode
           </div>
-          <h1 class="wizard-headline" id="wizard-headline">Your AI team, visible and working.</h1>
-          <p class="wizard-subhead">WUPHF gives operators one room where AI specialists can claim real work, show progress in public, and pull in a human only when judgment is required. Unlike the original WUPHF.com, this one still works next quarter.</p>
+          <h1 class="wizard-headline" id="wizard-headline">Your office, visible and doing real work.</h1>
+          <p class="wizard-subhead">WUPHF gives operators one room where AI specialists can claim real business work, show progress in public, and pull in a human only when judgment is required. Live runs are judged on real outcomes, not proof artifacts or demo theater.</p>
         </div>
 
         <div class="wizard-panel">
@@ -1923,15 +1972,15 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
           </div>
           <div class="form-group">
             <label class="label" for="wiz-company">Company or project name <span style="color:var(--red,#ef4444)">*</span></label>
-            <input class="input" id="wiz-company" placeholder="Dunder Mifflin Paper Co. (probably not)" autocomplete="organization" />
+            <input class="input" id="wiz-company" placeholder="Acme Operations, or your real project name" autocomplete="organization" />
           </div>
           <div class="form-group">
             <label class="label" for="wiz-description">One-liner description <span style="color:var(--red,#ef4444)">*</span></label>
-            <input class="input" id="wiz-description" placeholder="We build AI-powered ops for lean teams" />
+            <input class="input" id="wiz-description" placeholder="What real business or workflow should this office run?" />
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label class="label" for="wiz-priority">Top priority right now <span style="color:var(--red,#ef4444)">*</span></label>
-            <input class="input" id="wiz-priority" placeholder="Ship MVP, close first 3 customers, stop being Michael Scott about the roadmap" />
+            <input class="input" id="wiz-priority" placeholder="Win the first real customer loop" />
           </div>
         </div>
 
@@ -1973,7 +2022,7 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
       <!-- Step 3: First task -->
       <div class="wizard-step" id="wizard-step-task">
         <div>
-          <h2 class="step-title" style="text-align:left;margin-bottom:4px;">What's the first thing you want done?</h2>
+          <h2 class="step-title" style="text-align:left;margin-bottom:4px;">What should this office do first?</h2>
         </div>
 
         <div class="template-grid" id="wiz-template-grid">
@@ -1981,14 +2030,14 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
         </div>
 
         <div>
-          <label class="label" for="wiz-task-input" style="margin-bottom:8px;display:block;">Or describe it yourself</label>
-          <textarea class="task-textarea" id="wiz-task-input" placeholder="Or tell me what's really on your mind&hellip;"></textarea>
+          <label class="label" for="wiz-task-input" style="margin-bottom:8px;display:block;">Or describe the first real business loop</label>
+          <textarea class="task-textarea" id="wiz-task-input" placeholder="What should the office invent and start operating?"></textarea>
         </div>
 
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-          <button class="task-skip" onclick="completeOnboarding(true)">I'll figure it out &mdash; open the empty office</button>
+          <button class="task-skip" onclick="completeOnboarding(true)">Open the office without a first task</button>
           <button class="btn btn-primary" onclick="completeOnboarding(false)">
-            Start working
+            Start the first loop
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
           </button>
         </div>
@@ -2001,7 +2050,7 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
   <div class="launch-screen" id="launch-screen">
     <div class="launch-spinner"></div>
     <p class="launch-text" id="launch-title">Opening the office&hellip;</p>
-    <p class="launch-sub" id="launch-status">Assembling your team</p>
+    <p class="launch-sub" id="launch-status">Preparing a live operating loop</p>
   </div>
 
   <!-- MAIN OFFICE -->
@@ -2510,11 +2559,22 @@ var WuphfAPI = (function() {
     return get('/health');
   }
 
-  function getTasks(channel) {
-    return get('/tasks', {
-      channel: channel || 'general',
-      viewer_slug: 'human'
-    });
+  function getTasks(channel, opts) {
+    var params = { viewer_slug: 'human' };
+    if (channel) params.channel = channel;
+    else params.channel = 'general';
+    if (opts && opts.includeDone) params.include_done = 'true';
+    if (opts && opts.status) params.status = opts.status;
+    if (opts && opts.mySlug) params.my_slug = opts.mySlug;
+    return get('/tasks', params);
+  }
+
+  function getOfficeTasks(opts) {
+    var params = { viewer_slug: 'human', all_channels: 'true' };
+    if (opts && opts.includeDone) params.include_done = 'true';
+    if (opts && opts.status) params.status = opts.status;
+    if (opts && opts.mySlug) params.my_slug = opts.mySlug;
+    return get('/tasks', params);
   }
 
   function toggleReaction(msgId, emoji, channel) {
@@ -2534,7 +2594,11 @@ var WuphfAPI = (function() {
       body: JSON.stringify({ id: id })
     }).then(function(r) { return r.json(); });
   }
-  function getScheduler() { return get('/scheduler'); }
+  function getScheduler(opts) {
+    var params = {};
+    if (opts && opts.dueOnly) params.due_only = 'true';
+    return get('/scheduler', params);
+  }
   function getSkills() { return get('/skills'); }
   function getUsage() { return get('/usage'); }
   function getMemory(channel) {
@@ -2604,17 +2668,18 @@ var TOTAL_STEPS = 8;
 var currentStep = 0;
 var selectedSize = '';
 var ONBOARDING_COPY = {
-  step1_headline: 'Your AI team, visible and working.',
-  step1_subhead: 'WUPHF gives operators one room where AI specialists can claim real work, show progress in public, and pull in a human only when judgment is required. Unlike the original WUPHF.com, this one still works next quarter.',
-  step1_cta: 'Assemble the team',
+  step1_headline: 'Your office, visible and doing real work.',
+  step1_subhead: 'WUPHF gives operators one room where AI specialists can claim real business work, show progress in public, and pull in a human only when judgment is required. Live runs are judged on real outcomes, not proof artifacts or demo theater.',
+  step1_cta: 'Open the office',
   step2_prereqs_title: 'First, make sure you have the tools',
   step2_keys_title: 'Connect your AI providers',
   step2_cta: 'Ready',
-  step3_title: "What's the first thing you want done?",
-  step3_placeholder: 'Or tell me what\'s really on your mind\u2026',
-  step3_skip: "I'll figure it out \u2014 open the empty office",
-  step3_cta: 'Start working',
+  step3_title: 'What should this office do first?',
+  step3_placeholder: 'What should the office invent and start operating?',
+  step3_skip: 'Open the office without a first task',
+  step3_cta: 'Start the first loop',
 };
+var BLANK_SLATE_STARTER_TEMPLATE = '__blank_slate__';
 var activeStarterTemplate = '';
 var brokerConnected = false;
 var currentChannel = 'general';
@@ -2629,7 +2694,7 @@ var DISCONNECT_THRESHOLD = 3;
 var currentApp = null; // null = messages view, 'tasks' | 'requests' | 'calendar'
 var memberActivityPollTimer = null;
 var cachedMembers = []; // latest /office-members data for activity classification
-var cachedTasks = []; // latest /tasks data
+var cachedTasks = []; // latest office-wide /tasks data
 var cachedRequests = []; // latest /requests data for runtime strip
 var cachedUsage = null; // latest /usage data for token counts
 
@@ -4084,7 +4149,53 @@ function renderStarterTemplates() {
   if (!container) return;
   container.textContent = '';
   var templates = starterTemplates();
-  if (!activeStarterTemplate && templates[0]) activeStarterTemplate = templates[0].id;
+  if (!activeStarterTemplate) activeStarterTemplate = BLANK_SLATE_STARTER_TEMPLATE;
+
+  var blankSlateCard = document.createElement('button');
+  blankSlateCard.className = 'starter-card' + (activeStarterTemplate === BLANK_SLATE_STARTER_TEMPLATE ? ' active' : '');
+  blankSlateCard.type = 'button';
+  blankSlateCard.addEventListener('click', function() {
+    applyBlankSlateStarter();
+  });
+
+  var blankSlateTop = document.createElement('div');
+  blankSlateTop.className = 'starter-card-top';
+  var blankSlateKicker = document.createElement('div');
+  blankSlateKicker.className = 'starter-card-kicker';
+  blankSlateKicker.innerHTML = '<span class="starter-card-dot" aria-hidden="true"></span><span>From scratch</span>';
+  var blankSlateBadge = document.createElement('div');
+  blankSlateBadge.className = 'starter-card-badge';
+  blankSlateBadge.textContent = 'No blueprint';
+  blankSlateTop.appendChild(blankSlateKicker);
+  blankSlateTop.appendChild(blankSlateBadge);
+
+  var blankSlateTitle = document.createElement('div');
+  blankSlateTitle.className = 'starter-card-title';
+  blankSlateTitle.textContent = 'Start from scratch';
+
+  var blankSlateCopy = document.createElement('p');
+  blankSlateCopy.className = 'starter-card-copy';
+  blankSlateCopy.textContent = 'Skip the preset business blueprints. The office will synthesize the first operating model from your directive and connected capabilities.';
+
+  var blankSlatePoints = document.createElement('div');
+  blankSlatePoints.className = 'starter-card-points';
+  [
+    { label: 'Path', value: 'Directive-first synthesis' },
+    { label: 'Best for', value: 'New businesses and fresh operating models' },
+    { label: 'Output', value: 'Blueprint, team, channels, and first live loop' }
+  ].forEach(function(point) {
+    var pointCard = document.createElement('div');
+    pointCard.className = 'starter-card-point';
+    pointCard.innerHTML = '<span class="starter-card-label">' + point.label + '</span><div class="starter-card-value">' + point.value + '</div>';
+    blankSlatePoints.appendChild(pointCard);
+  });
+
+  blankSlateCard.appendChild(blankSlateTop);
+  blankSlateCard.appendChild(blankSlateTitle);
+  blankSlateCard.appendChild(blankSlateCopy);
+  blankSlateCard.appendChild(blankSlatePoints);
+  container.appendChild(blankSlateCard);
+
   templates.forEach(function(template) {
     var card = document.createElement('button');
     card.className = 'starter-card' + (activeStarterTemplate === template.id ? ' active' : '');
@@ -4133,6 +4244,10 @@ function renderStarterTemplates() {
 }
 
 function applyStarterTemplate(id) {
+  if (id === BLANK_SLATE_STARTER_TEMPLATE) {
+    applyBlankSlateStarter();
+    return;
+  }
   var template = findStarterTemplate(id);
   if (!template) return;
   activeStarterTemplate = template.id;
@@ -4142,6 +4257,13 @@ function applyStarterTemplate(id) {
   setFirstExistingFieldValue(['q-priority', 'wiz-priority'], template.defaults.priority);
   AGENTS = cloneAgents(template.agents);
   selectSize(template.defaults.size);
+  renderStarterTemplates();
+  if (currentStep >= 3) renderTeamGrid();
+}
+
+function applyBlankSlateStarter() {
+  activeStarterTemplate = BLANK_SLATE_STARTER_TEMPLATE;
+  applyStarterPreview(null);
   renderStarterTemplates();
   if (currentStep >= 3) renderTeamGrid();
 }
@@ -4379,7 +4501,7 @@ function renderAPIKeys() {
 
 // ─── Build team ───
 function buildTeam() {
-  var starter = findStarterTemplate(activeStarterTemplate);
+  var starter = activeStarterTemplate === BLANK_SLATE_STARTER_TEMPLATE ? null : findStarterTemplate(activeStarterTemplate);
   if (starter) {
     AGENTS = cloneAgents(starter.agents);
     applyStarterPreview(starter);
@@ -4455,7 +4577,7 @@ function renderTeamGrid() {
 
 // ─── Launch ───
 function launchOffice() {
-  var starter = findStarterTemplate(activeStarterTemplate);
+  var starter = activeStarterTemplate === BLANK_SLATE_STARTER_TEMPLATE ? null : findStarterTemplate(activeStarterTemplate);
   var companyData = {
     name: getFirstExistingFieldValue(['q-company', 'wiz-company']),
     description: getFirstExistingFieldValue(['q-description', 'wiz-description']),
@@ -5055,11 +5177,15 @@ function classifyActivity(member) {
   return { state: 'lurking', label: 'lurking', dotClass: 'lurking' };
 }
 function findAgentTask(slug) {
+  var best = null;
   for (var i = 0; i < cachedTasks.length; i++) {
     var t = cachedTasks[i];
-    if (t.owner === slug && t.status !== 'done' && t.status !== 'completed') return t;
+    if (t.owner !== slug) continue;
+    var status = normalizeTaskStatus(t.status);
+    if (status === 'done' || status === 'completed') continue;
+    if (!best || liveWorkStatusRank(t) < liveWorkStatusRank(best)) best = t;
   }
-  return null;
+  return best;
 }
 // ─── Office Aside: thought bubble text generator ───
 var _officeAsideLists = {
@@ -5779,7 +5905,7 @@ function renderTasksApp(panel) {
   panel.style.overflow = 'hidden';
   var loading = el('div', { style: { padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '14px' } }, 'Loading tasks...');
   panel.appendChild(loading);
-  WuphfAPI.getTasks(currentChannel)
+  WuphfAPI.getOfficeTasks({ includeDone: true })
     .then(function(data) {
       panel.textContent = '';
       var tasks = data.tasks || [];
@@ -5788,11 +5914,21 @@ function renderTasksApp(panel) {
         panel.appendChild(el('div', { className: 'request-empty' }, 'No tasks yet.'));
         return;
       }
+      var header = el('div', { style: { padding: '16px 20px 0', borderBottom: '1px solid var(--border)' } }, [
+        el('h3', { style: { fontSize: '16px', fontWeight: '600' } }, 'Office tasks'),
+        el('div', { style: { fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px', marginBottom: '12px' } }, 'All active lanes across the office, not just #' + currentChannel + '.')
+      ]);
+      panel.appendChild(header);
       renderTaskBoard(panel, tasks);
     })
     .catch(function() {
       panel.textContent = '';
       if (cachedTasks.length > 0) {
+        var header = el('div', { style: { padding: '16px 20px 0', borderBottom: '1px solid var(--border)' } }, [
+          el('h3', { style: { fontSize: '16px', fontWeight: '600' } }, 'Office tasks'),
+          el('div', { style: { fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px', marginBottom: '12px' } }, 'Showing cached office state while the broker reconnects.')
+        ]);
+        panel.appendChild(header);
         renderTaskBoard(panel, cachedTasks);
       } else {
         panel.appendChild(el('div', { className: 'request-empty' }, 'Could not load tasks.'));
@@ -6103,68 +6239,297 @@ function renderSkillsList(panel, skills) {
     panel.appendChild(card);
   });
 }
+function buildActivityStat(kicker, value, copy) {
+  return el('div', { className: 'activity-stat-card' }, [
+    el('div', { className: 'activity-stat-kicker' }, kicker),
+    el('div', { className: 'activity-stat-value' }, value),
+    el('div', { className: 'activity-stat-copy' }, copy)
+  ]);
+}
+
+function buildActivitySection(title, meta) {
+  var section = el('section', { className: 'activity-section' });
+  var header = el('div', { className: 'activity-section-header' }, [
+    el('div', { className: 'activity-section-title' }, title),
+    el('div', { className: 'activity-section-meta' }, meta || '')
+  ]);
+  section.appendChild(header);
+  return section;
+}
+
+function buildActivityItem(title, body, metaParts, opts) {
+  opts = opts || {};
+  var item = el('div', { className: 'activity-item' });
+  var header = el('div', { className: 'activity-item-header' });
+  if (opts.kindLabel) {
+    header.appendChild(el('span', { className: 'activity-kind-pill' + (opts.kindClass ? ' ' + opts.kindClass : '') }, opts.kindLabel));
+  }
+  header.appendChild(el('div', { className: 'activity-item-title' }, title));
+  item.appendChild(header);
+  if (body) item.appendChild(el('div', { className: 'activity-item-body' }, body));
+  if (metaParts && metaParts.length > 0) {
+    var meta = el('div', { className: 'activity-item-meta' });
+    metaParts.forEach(function(part) {
+      if (part) meta.appendChild(el('span', null, part));
+    });
+    item.appendChild(meta);
+  }
+  if (opts.onClick) item.addEventListener('click', opts.onClick);
+  return item;
+}
+
+function summarizeActionKind(kind) {
+  kind = String(kind || 'action').toLowerCase();
+  if (/approv|request/.test(kind)) return { label: 'approval', cls: 'warning' };
+  if (/deploy|incident|error|fail/.test(kind)) return { label: kind, cls: 'danger' };
+  if (/automation|workflow|sync|integration/.test(kind)) return { label: kind, cls: 'good' };
+  return { label: kind, cls: '' };
+}
+
 // --- Artifacts view (#58, #104) ---
 function renderArtifactsApp(panel) {
   if (!brokerConnected) {
-    panel.appendChild(el('div', { className: 'request-empty' }, 'Connect to broker to see artifacts.'));
+    panel.appendChild(el('div', { className: 'request-empty' }, 'Connect to broker to see office activity.'));
     return;
   }
   panel.style.overflow = 'auto';
-  var loading = el('div', { style: { padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '14px' } }, 'Loading artifacts...');
+  var loading = el('div', { style: { padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '14px' } }, 'Loading office activity...');
   panel.appendChild(loading);
-  WuphfAPI.getActions()
-    .then(function(data) {
-      panel.textContent = '';
-      var actions = data.actions || data || [];
-      if (!Array.isArray(actions)) actions = [];
-      if (actions.length === 0) {
-        panel.appendChild(el('div', { className: 'request-empty' }, 'No artifacts yet.'));
-        return;
-      }
-      var header = el('div', { style: { padding: '0 20px 12px', borderBottom: '1px solid var(--border)' } });
-      header.appendChild(el('h3', { style: { fontSize: '16px', fontWeight: '600' } }, 'Activity'));
-      header.appendChild(el('div', { style: { fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px' } }, actions.length + ' actions recorded'));
-      panel.appendChild(header);
-      var timeline = el('div', { className: 'artifact-timeline' });
-      actions.sort(function(a, b) {
-        var ta = a.timestamp || a.created_at || '';
-        var tb = b.timestamp || b.created_at || '';
-        return tb.localeCompare(ta);
-      });
-      actions.forEach(function(action) {
-        var kind = (action.kind || action.type || 'tool').toLowerCase();
-        var dotClass = 'artifact-dot';
-        var typeClass = 'artifact-type';
-        if (kind.indexOf('commit') >= 0 || kind.indexOf('push') >= 0) { dotClass += ' artifact-dot-commit'; typeClass += ' artifact-type-commit'; }
-        else if (kind.indexOf('deploy') >= 0) { dotClass += ' artifact-dot-deploy'; typeClass += ' artifact-type-deploy'; }
-        else if (kind.indexOf('approv') >= 0) { dotClass += ' artifact-dot-approval'; typeClass += ' artifact-type-approval'; }
-        else { dotClass += ' artifact-dot-tool'; typeClass += ' artifact-type-tool'; }
 
-        var item = el('div', { className: 'artifact-item' });
-        item.appendChild(el('div', { className: dotClass }));
-        var body = el('div', { className: 'artifact-body' });
-        var hdr = el('div', { className: 'artifact-header' });
-        hdr.appendChild(el('span', { className: typeClass }, kind));
-        if (action.owner || action.agent) {
-          hdr.appendChild(el('span', { className: 'artifact-agent' }, action.owner || action.agent));
-        }
-        body.appendChild(hdr);
-        if (action.summary || action.name || action.title || action.description) {
-          body.appendChild(el('div', { className: 'artifact-summary' }, action.summary || action.name || action.title || action.description));
-        }
-        var ts = action.timestamp || action.created_at || action.updated_at;
-        if (ts) {
-          body.appendChild(el('div', { className: 'artifact-time' }, new Date(ts).toLocaleString()));
-        }
-        item.appendChild(body);
-        timeline.appendChild(item);
-      });
-      panel.appendChild(timeline);
-    })
-    .catch(function() {
-      panel.textContent = '';
-      panel.appendChild(el('div', { className: 'request-empty' }, 'Could not load artifacts.'));
+  Promise.all([
+    WuphfAPI.getOfficeTasks({ includeDone: true }).catch(function() { return { tasks: [] }; }),
+    WuphfAPI.getActions().catch(function() { return { actions: [] }; }),
+    WuphfAPI.getDecisions().catch(function() { return { decisions: [] }; }),
+    WuphfAPI.getWatchdogs().catch(function() { return { watchdogs: [] }; }),
+    WuphfAPI.getScheduler({ dueOnly: true }).catch(function() { return { jobs: [] }; }),
+    WuphfAPI.getUsage().catch(function() { return null; }),
+    WuphfAPI.getOfficeMembers().catch(function() { return { members: [] }; })
+  ]).then(function(results) {
+    panel.textContent = '';
+
+    var tasks = (results[0].tasks || []).slice();
+    var actions = (results[1].actions || []).slice();
+    var decisions = (results[2].decisions || []).slice();
+    var watchdogs = (results[3].watchdogs || []).slice();
+    var jobs = (results[4].jobs || []).slice();
+    var usage = results[5] || cachedUsage || { total: {}, agents: {} };
+    var members = normalizeMemberActivityHints(results[6].members || cachedMembers || []);
+
+    if (tasks.length > 0) cachedTasks = tasks;
+    if (usage) cachedUsage = usage;
+    if (members.length > 0) cachedMembers = members;
+
+    tasks.sort(function(a, b) { return liveWorkStatusRank(a) - liveWorkStatusRank(b); });
+    actions.sort(function(a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+    decisions.sort(function(a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+    watchdogs.sort(function(a, b) { return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')); });
+    jobs.sort(function(a, b) { return String(a.next_run || a.due_at || '').localeCompare(String(b.next_run || b.due_at || '')); });
+
+    var activeTasks = tasks.filter(function(t) {
+      var status = normalizeTaskStatus(t.status);
+      return status === 'in_progress' || status === 'review' || status === 'open';
     });
+    var blockedTasks = tasks.filter(function(t) { return normalizeTaskStatus(t.status) === 'blocked'; });
+    var doneTasks = tasks.filter(function(t) {
+      var status = normalizeTaskStatus(t.status);
+      return status === 'done' || status === 'completed';
+    });
+    var liveAgents = members.filter(function(member) {
+      return member.slug !== 'human' && member.slug !== 'you' && classifyActivity(member).state !== 'lurking';
+    });
+
+    var shell = el('div', { className: 'activity-shell' });
+    shell.appendChild(el('div', { className: 'activity-hero' }, [
+      el('div', null, [
+        el('div', { className: 'activity-hero-title' }, 'Office activity'),
+        el('div', { className: 'activity-hero-copy' }, 'See what the office is actually doing: which lanes are moving, which agents are active, what decisions just got made, and where real work is blocked.')
+      ]),
+      el('div', { className: 'activity-section-meta' }, new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))
+    ]));
+
+    shell.appendChild(el('div', { className: 'activity-stat-grid' }, [
+      buildActivityStat('Active lanes', String(activeTasks.length), 'Live tasks currently moving across all channels.'),
+      buildActivityStat('Blocked', String(blockedTasks.length + watchdogs.length), 'Lanes and watchdogs that need intervention.'),
+      buildActivityStat('Agents in motion', String(liveAgents.length), 'Specialists currently shipping, plotting, or talking.'),
+      buildActivityStat('Recent actions', String(actions.length), 'Automation, handoffs, and system actions the office has logged.'),
+      buildActivityStat('Due automations', String(jobs.length), 'Scheduled jobs that are due right now.'),
+      buildActivityStat('Session tokens', formatTokens((usage.session && usage.session.total_tokens) || 0), 'Live token burn for the current office session.')
+    ]));
+
+    var grid = el('div', { className: 'activity-grid' });
+    var left = el('div', { className: 'activity-column' });
+    var right = el('div', { className: 'activity-column' });
+
+    var laneSection = buildActivitySection('Active lanes', activeTasks.length + ' open or moving');
+    if (activeTasks.length === 0) {
+      laneSection.appendChild(el('div', { className: 'activity-empty' }, 'No active lanes right now.'));
+    } else {
+      var laneList = el('div', { className: 'activity-list' });
+      activeTasks.slice(0, 10).forEach(function(task) {
+        var meta = [];
+        if (task.channel) meta.push('#' + task.channel);
+        if (task.owner) meta.push('@' + task.owner);
+        if (task.execution_mode) meta.push(task.execution_mode.replace(/_/g, ' '));
+        if (task.worktree_branch) meta.push(task.worktree_branch);
+        laneList.appendChild(buildActivityItem(
+          task.title || task.name || task.id || 'Untitled task',
+          task.details || task.description || 'Task details pending.',
+          meta,
+          {
+            kindLabel: normalizeTaskStatus(task.status).replace(/_/g, ' '),
+            kindClass: normalizeTaskStatus(task.status) === 'blocked' ? 'danger' : (normalizeTaskStatus(task.status) === 'review' ? 'warning' : 'good'),
+            onClick: function() { openTaskDetail(task); }
+          }
+        ));
+      });
+      laneSection.appendChild(laneList);
+    }
+    left.appendChild(laneSection);
+
+    var agentSection = buildActivitySection('Agent pulse', liveAgents.length + ' active right now');
+    if (liveAgents.length === 0) {
+      agentSection.appendChild(el('div', { className: 'activity-empty' }, 'No agents are visibly moving right now.'));
+    } else {
+      var agentWrap = el('div', { className: 'live-work-cards', style: { flexWrap: 'wrap', overflow: 'visible' } });
+      liveAgents.slice(0, 10).forEach(function(member) {
+        var activity = classifyActivity(member);
+        var task = findAgentTask(member.slug);
+        var chip = el('div', { className: 'activity-agent-chip' });
+        chip.appendChild(el('span', { className: 'agent-grid-card-dot ' + activity.dotClass }, ''));
+        chip.appendChild(el('div', { className: 'activity-agent-meta' }, [
+          el('div', { className: 'activity-agent-name' }, member.name || member.slug),
+          el('div', { className: 'activity-agent-stream' }, agentLatestText[member.slug] || (task && (task.title || task.name)) || member.activity || activity.label)
+        ]));
+        if (task && task.channel) chip.appendChild(el('span', { className: 'live-work-card-channel' }, '#' + task.channel));
+        agentWrap.appendChild(chip);
+      });
+      agentSection.appendChild(agentWrap);
+    }
+    left.appendChild(agentSection);
+
+    var actionSection = buildActivitySection('Recent actions', actions.length + ' recorded');
+    if (actions.length === 0) {
+      actionSection.appendChild(el('div', { className: 'activity-empty' }, 'No actions recorded yet.'));
+    } else {
+      var actionList = el('div', { className: 'activity-list' });
+      actions.slice(0, 12).forEach(function(action) {
+        var kind = summarizeActionKind(action.kind || action.type);
+        var meta = [];
+        if (action.channel) meta.push('#' + action.channel);
+        if (action.actor) meta.push('@' + action.actor);
+        if (action.source) meta.push(action.source);
+        if (action.created_at) meta.push(new Date(action.created_at).toLocaleString());
+        actionList.appendChild(buildActivityItem(
+          action.summary || action.name || action.title || 'Action',
+          action.related_id ? 'Related: ' + action.related_id : '',
+          meta,
+          { kindLabel: kind.label, kindClass: kind.cls }
+        ));
+      });
+      actionSection.appendChild(actionList);
+    }
+    left.appendChild(actionSection);
+
+    var attentionSection = buildActivitySection('Needs attention', (blockedTasks.length + watchdogs.length) + ' items');
+    if (blockedTasks.length === 0 && watchdogs.length === 0) {
+      attentionSection.appendChild(el('div', { className: 'activity-empty' }, 'No active blockers or watchdog alerts.'));
+    } else {
+      var attentionList = el('div', { className: 'activity-list' });
+      blockedTasks.slice(0, 6).forEach(function(task) {
+        var meta = [];
+        if (task.channel) meta.push('#' + task.channel);
+        if (task.owner) meta.push('@' + task.owner);
+        attentionList.appendChild(buildActivityItem(
+          task.title || task.name || task.id || 'Blocked task',
+          task.details || task.description || 'Blocked lane needs operator attention.',
+          meta,
+          {
+            kindLabel: 'blocked',
+            kindClass: 'danger',
+            onClick: function() { openTaskDetail(task); }
+          }
+        ));
+      });
+      watchdogs.slice(0, 6).forEach(function(alert) {
+        var meta = [];
+        if (alert.channel) meta.push('#' + alert.channel);
+        if (alert.owner) meta.push('@' + alert.owner);
+        if (alert.updated_at || alert.created_at) meta.push(new Date(alert.updated_at || alert.created_at).toLocaleString());
+        attentionList.appendChild(buildActivityItem(
+          alert.summary || alert.kind || 'Watchdog alert',
+          alert.target_type ? (alert.target_type + (alert.target_id ? ' · ' + alert.target_id : '')) : '',
+          meta,
+          { kindLabel: alert.kind || 'watchdog', kindClass: 'danger' }
+        ));
+      });
+      attentionSection.appendChild(attentionList);
+    }
+    right.appendChild(attentionSection);
+
+    var decisionSection = buildActivitySection('Recent decisions', decisions.length + ' recorded');
+    if (decisions.length === 0) {
+      decisionSection.appendChild(el('div', { className: 'activity-empty' }, 'No decisions recorded yet.'));
+    } else {
+      var decisionList = el('div', { className: 'activity-list' });
+      decisions.slice(0, 8).forEach(function(decision) {
+        var meta = [];
+        if (decision.channel) meta.push('#' + decision.channel);
+        if (decision.owner) meta.push('@' + decision.owner);
+        if (decision.created_at) meta.push(new Date(decision.created_at).toLocaleString());
+        if (decision.requires_human) meta.push('human required');
+        decisionList.appendChild(buildActivityItem(
+          decision.summary || decision.kind || 'Decision',
+          decision.reason || '',
+          meta,
+          {
+            kindLabel: decision.kind || 'decision',
+            kindClass: decision.blocking ? 'warning' : ''
+          }
+        ));
+      });
+      decisionSection.appendChild(decisionList);
+    }
+    right.appendChild(decisionSection);
+
+    var schedulerSection = buildActivitySection('Due automations', jobs.length + ' due now');
+    if (jobs.length === 0) {
+      schedulerSection.appendChild(el('div', { className: 'activity-empty' }, 'No jobs are due right now.'));
+    } else {
+      var jobList = el('div', { className: 'activity-list' });
+      jobs.slice(0, 6).forEach(function(job) {
+        var meta = [];
+        if (job.channel) meta.push('#' + job.channel);
+        if (job.provider) meta.push(job.provider);
+        if (job.next_run || job.due_at) meta.push(new Date(job.next_run || job.due_at).toLocaleString());
+        jobList.appendChild(buildActivityItem(
+          job.label || job.slug || 'Scheduled job',
+          job.workflow_key || job.skill_name || job.kind || '',
+          meta,
+          {
+            kindLabel: job.status || 'scheduled',
+            kindClass: schedulerJobDueVisualClass(job)
+          }
+        ));
+      });
+      schedulerSection.appendChild(jobList);
+    }
+    right.appendChild(schedulerSection);
+
+    grid.appendChild(left);
+    grid.appendChild(right);
+    shell.appendChild(grid);
+    panel.appendChild(shell);
+  }).catch(function() {
+    panel.textContent = '';
+    panel.appendChild(el('div', { className: 'request-empty' }, 'Could not load office activity.'));
+  });
+}
+
+function schedulerJobDueVisualClass(job) {
+  var status = String(job.status || '').toLowerCase();
+  if (status === 'failed' || status === 'error') return 'danger';
+  if (status === 'active' || status === 'running' || status === 'due') return 'good';
+  return '';
 }
 
 // --- Workspace summary (#30) and hint (#31) ---
@@ -6228,6 +6593,52 @@ function renderRuntimeStrip() {
   }
 }
 
+function liveWorkStatusRank(task) {
+  var status = normalizeTaskStatus(task.status);
+  if (status === 'in_progress') return 0;
+  if (status === 'review') return 1;
+  if (status === 'blocked') return 2;
+  if (status === 'open') return 3;
+  return 4;
+}
+
+function renderLiveTaskLaneCard(task) {
+  var card = document.createElement('div');
+  card.className = 'live-work-lane';
+  card.addEventListener('click', function() { openTaskDetail(task); });
+
+  var header = document.createElement('div');
+  header.className = 'live-work-lane-header';
+  var status = normalizeTaskStatus(task.status);
+  header.appendChild(el('span', { className: 'live-work-lane-status ' + status }, status.replace(/_/g, ' ')));
+  if (task.channel) header.appendChild(el('span', { className: 'live-work-card-channel' }, '#' + task.channel));
+  if (task.execution_mode) header.appendChild(el('span', { className: 'live-work-card-meta' }, task.execution_mode.replace(/_/g, ' ')));
+  card.appendChild(header);
+
+  var owner = document.createElement('div');
+  owner.className = 'live-work-lane-owner';
+  owner.textContent = task.owner || task.assignee || 'unassigned';
+  card.appendChild(owner);
+
+  var title = document.createElement('div');
+  title.className = 'live-work-lane-title';
+  title.textContent = task.title || task.name || task.id || 'Untitled task';
+  card.appendChild(title);
+
+  if (task.details || task.description) {
+    card.appendChild(el('div', { className: 'activity-item-body' }, String(task.details || task.description).slice(0, 180)));
+  }
+
+  var meta = document.createElement('div');
+  meta.className = 'live-work-lane-submeta';
+  if (task.worktree_branch) meta.appendChild(el('span', null, '\u2387 ' + task.worktree_branch));
+  else if (task.worktree_path) meta.appendChild(el('span', null, '\u2387 ' + task.worktree_path.split('/').pop()));
+  if (task.review_state) meta.appendChild(el('span', null, 'review ' + task.review_state));
+  if (task.thread_id) meta.appendChild(el('span', null, 'thread ' + task.thread_id));
+  card.appendChild(meta);
+  return card;
+}
+
 // --- Live work cards (#77) ---
 function renderLiveWork() {
   var section = document.getElementById('live-work-section');
@@ -6245,9 +6656,17 @@ function renderLiveWork() {
 
   // Blocked tasks (#80)
   var blockedTasks = cachedTasks.filter(function(t) { return t.status === 'blocked'; });
+  var activeTasks = cachedTasks.filter(function(t) {
+    var status = normalizeTaskStatus(t.status);
+    return status === 'in_progress' || status === 'review' || status === 'open';
+  }).sort(function(a, b) {
+    var rank = liveWorkStatusRank(a) - liveWorkStatusRank(b);
+    if (rank !== 0) return rank;
+    return String(a.title || a.id || '').localeCompare(String(b.title || b.id || ''));
+  });
 
   // Wait state (#79) — show calm message when nothing is moving
-  if (liveAgents.length === 0 && blockedTasks.length === 0) {
+  if (liveAgents.length === 0 && blockedTasks.length === 0 && activeTasks.length === 0) {
     var waitState = document.createElement('div');
     waitState.className = 'wait-state';
     var waitIcon = document.createElement('div');
@@ -6262,10 +6681,24 @@ function renderLiveWork() {
     return;
   }
 
+  if (activeTasks.length > 0) {
+    var laneTitle = document.createElement('div');
+    laneTitle.className = 'live-work-title';
+    laneTitle.textContent = 'Active lanes across the office';
+    section.appendChild(laneTitle);
+
+    var laneGrid = document.createElement('div');
+    laneGrid.className = 'live-work-grid';
+    activeTasks.slice(0, 6).forEach(function(task) {
+      laneGrid.appendChild(renderLiveTaskLaneCard(task));
+    });
+    section.appendChild(laneGrid);
+  }
+
   if (liveAgents.length > 0) {
     var title = document.createElement('div');
     title.className = 'live-work-title';
-    title.textContent = 'Live work now';
+    title.textContent = 'Who is doing it right now';
     section.appendChild(title);
 
     var cards = document.createElement('div');
@@ -6281,10 +6714,13 @@ function renderLiveWork() {
       agentName.textContent = agent ? agent.name : a.name || a.slug;
       var taskText = document.createElement('span');
       taskText.className = 'live-work-card-task';
-      taskText.textContent = a.task ? a.task.title || a.task.name || a.activity : a.activity;
+      taskText.textContent = a.task ? (a.task.title || a.task.name || a.activity) : (agentLatestText[a.slug] || a.activity);
       card.appendChild(dot);
       card.appendChild(agentName);
       card.appendChild(taskText);
+      if (a.task && a.task.channel) {
+        card.appendChild(el('span', { className: 'live-work-card-channel' }, '#' + a.task.channel));
+      }
       // Session token count for this agent
       if (cachedUsage && cachedUsage.agents && cachedUsage.agents[a.slug]) {
         var au = cachedUsage.agents[a.slug];
@@ -7399,7 +7835,7 @@ function startMemberActivityPolling() {
 function fetchMemberActivity() {
   Promise.all([
     WuphfAPI.getMembers(currentChannel).catch(function() { return { members: [] }; }),
-    WuphfAPI.getTasks(currentChannel).catch(function() { return { tasks: [] }; }),
+    WuphfAPI.getOfficeTasks().catch(function() { return { tasks: [] }; }),
     WuphfAPI.getUsage().catch(function() { return null; })
   ]).then(function(results) {
     cachedMembers = normalizeMemberActivityHints(results[0].members || []);
@@ -10530,7 +10966,7 @@ function renderRecoveryData(panel, state, tasksData, membersData) {
   var stats = [
     ['Current Channel', currentChannel],
     ['Session Mode', dmModeActive ? '1:1 with ' + (dmAgent ? dmAgent.name : '?') : 'Office'],
-    ['Connected', brokerConnected ? 'Yes' : 'No (demo mode)'],
+    ['Connected', brokerConnected ? 'Yes' : 'No (broker disconnected)'],
     ['Messages Loaded', Object.keys(allMessages).length.toString()],
     ['Active Threads', Object.keys(threadReplyCounts).length.toString()],
   ];
@@ -10859,12 +11295,15 @@ function normalizeTaskStatus(status) {
 
 function renderTaskBoard(container, tasks) {
   var columns = { open: [], in_progress: [], review: [], done: [] };
+  var channelMap = {};
   tasks.forEach(function(t) {
     var status = normalizeTaskStatus(t.status);
+    if (t.channel) channelMap[t.channel] = true;
     if (status === 'blocked') { columns.open.push(t); return; }
     if (columns[status]) columns[status].push(t);
     else columns.open.push(t);
   });
+  var showChannel = Object.keys(channelMap).length > 1;
 
   var board = el('div', { className: 'task-board' });
 
@@ -10907,11 +11346,17 @@ function renderTaskBoard(container, tasks) {
 
       var title = el('div', { className: 'task-card-title' }, task.title || task.name || 'Untitled');
       card.appendChild(title);
+      if (showChannel && task.channel) {
+        card.appendChild(el('div', { className: 'task-card-worktree', style: { marginBottom: '6px' } }, '#' + task.channel));
+      }
 
       // Worktree info (#53)
       if (task.worktree_branch || task.worktree_path) {
         var branchText = task.worktree_branch || task.worktree_path.split('/').pop();
         card.appendChild(el('div', { className: 'task-card-worktree' }, '\u2387 ' + branchText));
+      }
+      if (task.details || task.description) {
+        card.appendChild(el('div', { style: { fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px', lineHeight: '1.45' } }, String(task.details || task.description).slice(0, 160)));
       }
 
       var meta = el('div', { className: 'task-card-meta' });
@@ -10968,8 +11413,8 @@ function openTaskDetail(task) {
     card.appendChild(row);
   });
 
-  if (task.description) {
-    var desc = el('div', { className: 'task-detail-desc' }, task.description);
+  if (task.details || task.description) {
+    var desc = el('div', { className: 'task-detail-desc' }, task.details || task.description);
     card.appendChild(desc);
   }
 

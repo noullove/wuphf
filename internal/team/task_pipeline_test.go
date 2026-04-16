@@ -39,3 +39,71 @@ func TestTaskRequiresRealExternalExecution(t *testing.T) {
 		t.Fatal("expected preview-only task not to require real external execution")
 	}
 }
+
+func TestNormalizeTaskPlanMarksLiveExternalTasks(t *testing.T) {
+	task := &teamTask{
+		Title:   "Post the consulting update to Slack",
+		Details: "Use live external execution for the customer-facing announcement.",
+		Owner:   "ceo",
+	}
+
+	normalizeTaskPlan(task)
+
+	if task.ExecutionMode != "live_external" {
+		t.Fatalf("expected live_external execution mode, got %q", task.ExecutionMode)
+	}
+	if task.ReviewState != "pending_review" {
+		t.Fatalf("expected pending_review for live external task, got %q", task.ReviewState)
+	}
+	if !taskNeedsStructuredReview(task) {
+		t.Fatal("expected live external task to require structured review")
+	}
+}
+
+func TestTaskRequiresLiveExternalExecutionRecognizesCommonIntegrations(t *testing.T) {
+	cases := []teamTask{
+		{Title: "Slack kickoff write"},
+		{Title: "Notion evidence page", Details: "Create the live external proof page."},
+		{Title: "Drive handoff", Details: "Upload the deliverable to Google Drive."},
+	}
+
+	for _, tc := range cases {
+		task := tc
+		if !taskRequiresRealExternalExecution(&task) {
+			t.Fatalf("expected %q to be treated as live external", task.Title)
+		}
+	}
+}
+
+func TestRejectTheaterTaskForLiveBusiness(t *testing.T) {
+	rejected := &teamTask{
+		Title:    "Create one new Notion proof packet for the client handoff",
+		Details:  "Use live external execution and keep the review bundle in sync.",
+		Owner:    "builder",
+		TaskType: "launch",
+	}
+	if err := rejectTheaterTaskForLiveBusiness(rejected); err == nil {
+		t.Fatal("expected live business theater task to be rejected")
+	}
+
+	rejectedByChannel := &teamTask{
+		Channel:       "client-delivery",
+		Title:         "Generate consulting review packet artifact from the updated blueprint",
+		Details:       "Post the exact local artifact path for the reviewer.",
+		Owner:         "builder",
+		ExecutionMode: "local_worktree",
+	}
+	if err := rejectTheaterTaskForLiveBusiness(rejectedByChannel); err == nil {
+		t.Fatal("expected theater task in client-delivery lane to be rejected")
+	}
+
+	allowed := &teamTask{
+		Title:    "Create preview packet for Slack handoff",
+		Details:  "Preview only. Mock testing is intended.",
+		Owner:    "builder",
+		TaskType: "launch",
+	}
+	if err := rejectTheaterTaskForLiveBusiness(allowed); err != nil {
+		t.Fatalf("expected explicit mock/preview task to be allowed, got %v", err)
+	}
+}

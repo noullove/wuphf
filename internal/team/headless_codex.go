@@ -45,6 +45,7 @@ var (
 )
 
 const headlessCodexLocalWorktreeRetryLimit = 2
+const headlessCodexExternalActionRetryLimit = 1
 
 type headlessCodexTurn struct {
 	Prompt     string
@@ -82,6 +83,7 @@ func (l *Launcher) launchHeadlessCodex() error {
 
 	l.broker = NewBroker()
 	l.broker.packSlug = l.packSlug
+	l.broker.blankSlateLaunch = l.blankSlateLaunch
 	if err := l.broker.SetSessionMode(l.sessionMode, l.oneOnOne); err != nil {
 		return fmt.Errorf("set session mode: %w", err)
 	}
@@ -588,21 +590,25 @@ func (l *Launcher) latestLeadWakeTaskAction(specialistSlug string) (officeAction
 }
 
 func headlessCodexTaskID(prompt string) string {
-	idx := strings.Index(prompt, "#task-")
-	if idx == -1 {
-		return ""
-	}
-	start := idx + 1
-	end := start
-	for end < len(prompt) {
-		ch := prompt[end]
-		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' {
-			end++
+	prefixes := []string{"#task-", "#blank-slate-"}
+	for _, prefix := range prefixes {
+		idx := strings.Index(prompt, prefix)
+		if idx == -1 {
 			continue
 		}
-		break
+		start := idx + 1
+		end := start
+		for end < len(prompt) {
+			ch := prompt[end]
+			if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' {
+				end++
+				continue
+			}
+			break
+		}
+		return strings.TrimSpace(prompt[start:end])
 	}
-	return strings.TrimSpace(prompt[start:end])
+	return ""
 }
 
 func (l *Launcher) agentPostedSubstantiveMessageSince(slug string, startedAt time.Time) bool {
@@ -653,24 +659,46 @@ func (l *Launcher) shouldRetryTimedOutHeadlessTurn(task *teamTask, turn headless
 	return turn.Attempts < headlessCodexLocalWorktreeRetryLimit
 }
 
-func headlessTimedOutRetryPrompt(slug string, prompt string, timeout time.Duration, attempt int) string {
-	note := fmt.Sprintf("Previous attempt by @%s timed out after %s without a durable task handoff. Retry #%d. For this retry, move immediately from claim/status into targeted file reads and edits, then leave the task in review/done/blocked before you stop. If you cannot ship the whole slice, ship the smallest runnable sub-slice and mark that state explicitly.", strings.TrimSpace(slug), timeout, attempt)
+func headlessTimedOutRetryPrompt(slug string, prompt string, timeout time.Duration, attempt int, external bool) string {
+	note := fmt.Sprintf("Previous attempt by @%s timed out after %s without a durable task handoff. Retry #%d.", strings.TrimSpace(slug), timeout, attempt)
+	if external {
+		note += " This is a live external-action task. Do the smallest useful live external step now. If Slack target discovery is already known, use it. If the first live Slack target fails, retry once against the resolved writable target; if that still fails, pivot immediately to the smallest useful live Notion or Drive action and report the exact blocker. Do not write repo docs or planning artifacts as substitutes."
+	} else {
+		note += " For this retry, move immediately from claim/status into targeted file reads and edits, then leave the task in review/done/blocked before you stop. If you cannot ship the whole slice, ship the smallest runnable sub-slice and mark that state explicitly."
+	}
 	if strings.TrimSpace(prompt) == "" {
 		return note
 	}
 	return strings.TrimSpace(prompt) + "\n\n" + note
 }
 
-func headlessFailedRetryPrompt(slug string, prompt string, detail string, attempt int) string {
+func headlessFailedRetryPrompt(slug string, prompt string, detail string, attempt int, external bool) string {
 	note := fmt.Sprintf("Previous attempt by @%s failed before a durable task handoff. Retry #%d.", strings.TrimSpace(slug), attempt)
 	if trimmed := strings.TrimSpace(detail); trimmed != "" {
 		note += " Last error: " + truncate(trimmed, 180) + "."
 	}
-	note += " For this retry, move immediately from claim/status into targeted file reads and edits, then leave the task in review/done/blocked before you stop. If you cannot ship the whole slice, ship the smallest runnable sub-slice and mark that state explicitly."
+	if external {
+		note += " This is a live external-action task. Do the smallest useful live external step now. Do not keep discovering or drafting repo substitutes. If the first live Slack target fails, retry once against the resolved writable target; if that still fails, pivot immediately to the smallest useful live Notion or Drive action and report the exact blocker."
+	} else {
+		note += " For this retry, move immediately from claim/status into targeted file reads and edits, then leave the task in review/done/blocked before you stop. If you cannot ship the whole slice, ship the smallest runnable sub-slice and mark that state explicitly."
+	}
 	if strings.TrimSpace(prompt) == "" {
 		return note
 	}
 	return strings.TrimSpace(prompt) + "\n\n" + note
+}
+
+func shouldRetryHeadlessTurn(task *teamTask, turn headlessCodexTurn) bool {
+	if task == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+		return turn.Attempts < headlessCodexLocalWorktreeRetryLimit
+	}
+	if taskRequiresRealExternalExecution(task) {
+		return turn.Attempts < headlessCodexExternalActionRetryLimit
+	}
+	return false
 }
 
 func (l *Launcher) recoverTimedOutHeadlessTurn(slug string, turn headlessCodexTurn, startedAt time.Time, timeout time.Duration) {
@@ -686,12 +714,16 @@ func (l *Launcher) recoverTimedOutHeadlessTurn(slug string, turn headlessCodexTu
 		appendHeadlessCodexLog(slug, fmt.Sprintf("timeout-recovery: %s already produced durable progress; leaving task state unchanged", task.ID))
 		return
 	}
-	if l.shouldRetryTimedOutHeadlessTurn(task, turn) {
+	if shouldRetryHeadlessTurn(task, turn) {
 		retryTurn := turn
 		retryTurn.Attempts++
 		retryTurn.EnqueuedAt = time.Now()
-		retryTurn.Prompt = headlessTimedOutRetryPrompt(slug, turn.Prompt, timeout, retryTurn.Attempts)
-		appendHeadlessCodexLog(slug, fmt.Sprintf("timeout-recovery: requeueing %s after silent timeout (attempt %d/%d)", task.ID, retryTurn.Attempts, headlessCodexLocalWorktreeRetryLimit))
+		retryTurn.Prompt = headlessTimedOutRetryPrompt(slug, turn.Prompt, timeout, retryTurn.Attempts, taskRequiresRealExternalExecution(task))
+		limit := headlessCodexLocalWorktreeRetryLimit
+		if taskRequiresRealExternalExecution(task) {
+			limit = headlessCodexExternalActionRetryLimit
+		}
+		appendHeadlessCodexLog(slug, fmt.Sprintf("timeout-recovery: requeueing %s after silent timeout (attempt %d/%d)", task.ID, retryTurn.Attempts, limit))
 		l.enqueueHeadlessCodexTurnRecord(slug, retryTurn)
 		return
 	}
@@ -717,12 +749,16 @@ func (l *Launcher) recoverFailedHeadlessTurn(slug string, turn headlessCodexTurn
 		appendHeadlessCodexLog(slug, fmt.Sprintf("error-recovery: %s already produced durable progress; leaving task state unchanged", task.ID))
 		return
 	}
-	if l.shouldRetryTimedOutHeadlessTurn(task, turn) {
+	if shouldRetryHeadlessTurn(task, turn) {
 		retryTurn := turn
 		retryTurn.Attempts++
 		retryTurn.EnqueuedAt = time.Now()
-		retryTurn.Prompt = headlessFailedRetryPrompt(slug, turn.Prompt, detail, retryTurn.Attempts)
-		appendHeadlessCodexLog(slug, fmt.Sprintf("error-recovery: requeueing %s after failed turn (attempt %d/%d)", task.ID, retryTurn.Attempts, headlessCodexLocalWorktreeRetryLimit))
+		retryTurn.Prompt = headlessFailedRetryPrompt(slug, turn.Prompt, detail, retryTurn.Attempts, taskRequiresRealExternalExecution(task))
+		limit := headlessCodexLocalWorktreeRetryLimit
+		if taskRequiresRealExternalExecution(task) {
+			limit = headlessCodexExternalActionRetryLimit
+		}
+		appendHeadlessCodexLog(slug, fmt.Sprintf("error-recovery: requeueing %s after failed turn (attempt %d/%d)", task.ID, retryTurn.Attempts, limit))
 		l.enqueueHeadlessCodexTurnRecord(slug, retryTurn)
 		return
 	}
@@ -1016,6 +1052,9 @@ func (l *Launcher) runHeadlessCodexTurn(ctx context.Context, slug string, notifi
 		summary = "reply ready · " + summary
 	}
 	l.updateHeadlessProgress(slug, "idle", "idle", summary, metrics)
+	if l.broker != nil && (result.Usage.InputTokens != 0 || result.Usage.OutputTokens != 0 || result.Usage.CacheReadTokens != 0 || result.Usage.CacheCreationTokens != 0 || result.Usage.CostUSD != 0) {
+		l.broker.RecordAgentUsage(slug, config.ResolveCodexModel(l.cwd), result.Usage)
+	}
 	if text := strings.TrimSpace(firstNonEmpty(result.FinalMessage, result.LastPlainLine)); text != "" {
 		appendHeadlessCodexLog(slug, "result: "+text)
 	}
@@ -1035,15 +1074,17 @@ func (l *Launcher) headlessCodexNeedsDangerousBypass(slug string) bool {
 
 func (l *Launcher) buildHeadlessCodexEnv(slug string, workspaceDir string, channel string) []string {
 	env := stripEnvKeys(os.Environ(), headlessCodexEnvVarsToStrip)
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		env = setEnvValue(env, "HOME", home)
-	}
 	if workspaceDir = normalizeHeadlessWorkspaceDir(workspaceDir); workspaceDir != "" {
 		env = setEnvValue(env, "PWD", workspaceDir)
 	}
 	if codexHome := prepareHeadlessCodexHome(); codexHome != "" {
+		// Use the isolated runtime home for the headless Codex process so it
+		// doesn't inherit user-global ~/.agents skills from the interactive shell.
+		env = setEnvValue(env, "HOME", codexHome)
 		_ = os.MkdirAll(filepath.Join(codexHome, "plugins", "cache"), 0o755)
 		env = setEnvValue(env, "CODEX_HOME", codexHome)
+	} else if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		env = setEnvValue(env, "HOME", home)
 	}
 	if base := l.headlessCodexWorkspaceCacheDir(workspaceDir); base != "" {
 		goCache := filepath.Join(base, "go-build", strings.TrimSpace(slug))
@@ -1080,6 +1121,10 @@ func (l *Launcher) buildHeadlessCodexEnv(slug string, workspaceDir string, chann
 		env = setEnvValue(env, "WUPHF_API_KEY", apiKey)
 		env = setEnvValue(env, "NEX_API_KEY", apiKey)
 	}
+	if openAIKey := strings.TrimSpace(config.ResolveOpenAIAPIKey()); openAIKey != "" {
+		env = setEnvValue(env, "WUPHF_OPENAI_API_KEY", openAIKey)
+		env = setEnvValue(env, "OPENAI_API_KEY", openAIKey)
+	}
 	return env
 }
 
@@ -1098,6 +1143,20 @@ func headlessCodexHomeDir() string {
 		return ""
 	}
 	return filepath.Join(home, ".codex")
+}
+
+func headlessCodexGlobalHomeDir() string {
+	if raw := strings.TrimSpace(os.Getenv("WUPHF_GLOBAL_HOME")); raw != "" {
+		if abs, err := filepath.Abs(raw); err == nil && strings.TrimSpace(abs) != "" {
+			return abs
+		}
+		return raw
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(home)
 }
 
 func headlessCodexRuntimeHomeDir() string {
@@ -1120,9 +1179,16 @@ func prepareHeadlessCodexHome() string {
 	if err := os.MkdirAll(runtimeHome, 0o755); err != nil {
 		return headlessCodexHomeDir()
 	}
-	sourceHome := normalizeHeadlessWorkspaceDir(headlessCodexHomeDir())
+	sourceHome := normalizeHeadlessWorkspaceDir(filepath.Join(headlessCodexGlobalHomeDir(), ".codex"))
+	if sourceHome == "" {
+		sourceHome = normalizeHeadlessWorkspaceDir(headlessCodexHomeDir())
+	}
 	if sourceHome != "" && sourceHome != runtimeHome {
 		copyHeadlessCodexHomeFile(sourceHome, runtimeHome, "auth.json", 0o600)
+	}
+	if userHome := strings.TrimSpace(headlessCodexGlobalHomeDir()); userHome != "" {
+		copyHeadlessCodexHomeFile(userHome, runtimeHome, filepath.Join(".one", "config.json"), 0o600)
+		copyHeadlessCodexHomeFile(userHome, runtimeHome, filepath.Join(".one", "update-check.json"), 0o600)
 	}
 	return runtimeHome
 }

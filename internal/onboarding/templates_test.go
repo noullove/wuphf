@@ -107,15 +107,38 @@ func TestTemplatesForPackRouting(t *testing.T) {
 		slug    string
 		firstID string
 	}{
-		{"", "landing"},                    // fallback to default
-		{"founding-team", "landing"},       // explicit default
-		{"revops", "pipeline_audit"},       // revops-specific
-		{"unknown-pack", "landing"},        // unknown falls through to default
+		{"", "landing"},                  // fallback to default
+		{"founding-team", "landing"},     // explicit default
+		{"revops", "pipeline_audit"},     // revops-specific
+		{"from-scratch", "objective"},    // explicit blank-slate selector
+		{"__blank_slate__", "objective"}, // current runtime selector
+		{"unknown-pack", "landing"},      // unknown falls through to default
 	}
 	for _, tc := range cases {
 		got := TemplatesForPack(tc.slug)
 		if len(got) == 0 || got[0].ID != tc.firstID {
 			t.Errorf("TemplatesForPack(%q): first ID got %q, want %q", tc.slug, got[0].ID, tc.firstID)
+		}
+	}
+}
+
+func TestTemplatesForSelectionUsesBlankSlateTemplates(t *testing.T) {
+	for _, selection := range []string{"from-scratch", blankSlateStarterTemplateID} {
+		got := TemplatesForSelection("", selection)
+		if len(got) == 0 {
+			t.Fatalf("expected blank-slate templates for %q", selection)
+		}
+		if got[0].ID != "objective" {
+			t.Fatalf("unexpected first blank-slate template for %q: %+v", selection, got[0])
+		}
+	}
+}
+
+func TestBlankSlateTemplatesDoNotRouteStarterLoopThroughReviewer(t *testing.T) {
+	got := BlankSlateTemplates()
+	for _, tmpl := range got {
+		if tmpl.OwnerSlug == "reviewer" {
+			t.Fatalf("blank-slate template %q should not be reviewer-owned: %+v", tmpl.ID, tmpl)
 		}
 	}
 }

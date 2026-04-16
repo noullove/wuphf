@@ -90,15 +90,17 @@ func ManifestPath() string {
 		return path
 	}
 
-	if cwd, err := os.Getwd(); err == nil {
-		local := filepath.Join(cwd, "wuphf.company.json")
-		if _, err := os.Stat(local); err == nil {
-			return local
+	if strings.TrimSpace(os.Getenv("WUPHF_RUNTIME_HOME")) == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			local := filepath.Join(cwd, "wuphf.company.json")
+			if _, err := os.Stat(local); err == nil {
+				return local
+			}
 		}
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := config.RuntimeHomeDir()
+	if home == "" {
 		return filepath.Join(".wuphf", "company.json")
 	}
 	return filepath.Join(home, ".wuphf", "company.json")
@@ -169,6 +171,9 @@ func SaveManifest(manifest Manifest) error {
 func DefaultManifest() Manifest {
 	now := time.Now().UTC().Format(time.RFC3339)
 	cfg, _ := config.Load()
+	if launchFromScratchRequested() {
+		return normalizeManifest(fromScratchDefaultManifest(now))
+	}
 	blueprintID := normalizeSlug(cfg.ActiveBlueprint())
 	manifest := Manifest{
 		Name:        "The WUPHF Office",
@@ -204,6 +209,41 @@ func DefaultManifest() Manifest {
 		Members:     generalMembers,
 	}}
 	return normalizeManifest(manifest)
+}
+
+func launchFromScratchRequested() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WUPHF_START_FROM_SCRATCH"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func fromScratchDefaultManifest(now string) Manifest {
+	members := []MemberSpec{
+		{Slug: "founder", Name: "Founder", Role: "Founder", System: true},
+		{Slug: "operator", Name: "Operator", Role: "Operator", System: true},
+		{Slug: "builder", Name: "Builder", Role: "Builder"},
+		{Slug: "reviewer", Name: "Reviewer", Role: "Reviewer"},
+	}
+	channelMembers := make([]string, 0, len(members))
+	for _, member := range members {
+		channelMembers = append(channelMembers, member.Slug)
+	}
+	return Manifest{
+		Name:        "WUPHF Office",
+		Description: "Autonomous office runtime that starts from a directive instead of a saved blueprint.",
+		Lead:        "founder",
+		Members:     members,
+		Channels: []ChannelSpec{{
+			Slug:        "general",
+			Name:        "general",
+			Description: "Primary room for inventing and operating the business from scratch.",
+			Members:     channelMembers,
+		}},
+		UpdatedAt: now,
+	}
 }
 
 func normalizeManifest(manifest Manifest) Manifest {

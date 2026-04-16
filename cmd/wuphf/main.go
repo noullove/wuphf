@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nex-crm/wuphf/internal/buildinfo"
@@ -24,6 +25,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	blueprintFlag := flag.String("blueprint", "", "Operation blueprint ID for this run")
 	packFlag := flag.String("pack", "", "Operation blueprint ID (legacy pack alias supported)")
+	fromScratchFlag := flag.Bool("from-scratch", false, "Start without a saved blueprint and synthesize the first operation from the directive")
 	providerFlag := flag.String("provider", "", "LLM provider override for this run (claude-code, codex)")
 	oneOnOne := flag.Bool("1o1", false, "Launch a direct 1:1 session with a single agent (default ceo)")
 	channelView := flag.Bool("channel-view", false, "Run as channel view (internal)")
@@ -68,10 +70,23 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	startFromScratch := *fromScratchFlag
+	if startFromScratch {
+		_ = os.Setenv("WUPHF_START_FROM_SCRATCH", "1")
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			_ = os.Setenv("WUPHF_GLOBAL_HOME", home)
+		}
+		if runtimeHome := fromScratchRuntimeHome(); runtimeHome != "" {
+			_ = os.Setenv("WUPHF_RUNTIME_HOME", runtimeHome)
+		}
+	}
 
 	selectedBlueprint := strings.TrimSpace(*blueprintFlag)
 	if selectedBlueprint == "" {
 		selectedBlueprint = strings.TrimSpace(*packFlag)
+	}
+	if startFromScratch {
+		selectedBlueprint = "__blank_slate__"
 	}
 
 	if *showVersion {
@@ -253,6 +268,26 @@ func runWeb(args []string, packSlug string, unsafe bool, webPort int, opusCEO bo
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func fromScratchRuntimeHome() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return ""
+	}
+	base := filepath.Join(cwd, ".wuphf")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return ""
+	}
+	dir, err := os.MkdirTemp(base, "from-scratch-runtime-")
+	if err != nil {
+		return ""
+	}
+	return dir
 }
 
 func dispatch(cmd string, apiKeyFlag string, format string) {

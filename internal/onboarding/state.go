@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/nex-crm/wuphf/internal/config"
 )
 
 // currentStateVersion is the schema version written to onboarded.json.
@@ -74,8 +77,8 @@ type ChecklistItem struct {
 // It expands $HOME via os.UserHomeDir; falls back to a relative path on
 // error (only occurs in extremely restricted environments).
 func StatePath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := strings.TrimSpace(config.RuntimeHomeDir())
+	if home == "" {
 		return filepath.Join(".wuphf", "onboarded.json")
 	}
 	return filepath.Join(home, ".wuphf", "onboarded.json")

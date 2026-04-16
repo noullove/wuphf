@@ -786,6 +786,7 @@ func suppressBroadcastReason(slug, content, replyTo string, messages []brokerMes
 	if strings.TrimSpace(slug) == "" || slug == "ceo" {
 		return ""
 	}
+	threadRoot := threadRootForReply(replyTo, messages)
 	myDomain := inferOfficeAgentDomain(slug)
 	latest := latestRelevantMessage(messages, replyTo)
 	latestDomain := inferOfficeTextDomain(content)
@@ -804,7 +805,7 @@ func suppressBroadcastReason(slug, content, replyTo string, messages []brokerMes
 			}
 		}
 	}
-	ownsTask := ownsRelevantTask(slug, replyTo, latestDomain, tasks)
+	ownsTask := ownsRelevantTask(slug, replyTo, threadRoot, latestDomain, tasks)
 
 	if explicitNeed || ownsTask {
 		return ""
@@ -835,9 +836,27 @@ func latestRelevantMessage(messages []brokerMessage, replyTo string) *brokerMess
 	return nil
 }
 
-func ownsRelevantTask(slug, replyTo, domain string, tasks []brokerTaskSummary) bool {
+func threadRootForReply(replyTo string, messages []brokerMessage) string {
+	replyTo = strings.TrimSpace(replyTo)
+	if replyTo == "" {
+		return ""
+	}
+	for _, msg := range messages {
+		if strings.TrimSpace(msg.ID) != replyTo {
+			continue
+		}
+		if root := strings.TrimSpace(msg.ReplyTo); root != "" {
+			return root
+		}
+		return replyTo
+	}
+	return replyTo
+}
+
+func ownsRelevantTask(slug, replyTo, threadRoot, domain string, tasks []brokerTaskSummary) bool {
 	slug = strings.TrimSpace(slug)
 	replyTo = strings.TrimSpace(replyTo)
+	threadRoot = strings.TrimSpace(threadRoot)
 	now := time.Now()
 	for _, task := range tasks {
 		if strings.TrimSpace(task.Owner) != slug {
@@ -847,7 +866,7 @@ func ownsRelevantTask(slug, replyTo, domain string, tasks []brokerTaskSummary) b
 			continue
 		}
 		if replyTo != "" {
-			if strings.TrimSpace(task.ThreadID) == replyTo {
+			if strings.TrimSpace(task.ThreadID) == replyTo || (threadRoot != "" && strings.TrimSpace(task.ThreadID) == threadRoot) {
 				return true
 			}
 			continue

@@ -75,6 +75,71 @@ func TestBrokerPersistsAndReloadsState(t *testing.T) {
 	}
 }
 
+func TestBrokerLoadsLastGoodSnapshotWhenPrimaryStateIsClobbered(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	b.mu.Lock()
+	b.messages = []channelMessage{{ID: "msg-1", From: "human", Channel: "general", Content: "Run the consulting loop", Timestamp: "2026-04-16T00:00:00Z"}}
+	b.tasks = []teamTask{{ID: "task-1", Channel: "delivery", Title: "Create the client brief", Owner: "builder", Status: "in_progress", ExecutionMode: "office", CreatedBy: "operator", CreatedAt: "2026-04-16T00:00:01Z", UpdatedAt: "2026-04-16T00:00:01Z"}}
+	b.actions = []officeActionLog{{ID: "act-1", Kind: "task_created", Channel: "delivery", Actor: "operator", Summary: "Create the client brief", RelatedID: "task-1", CreatedAt: "2026-04-16T00:00:01Z"}}
+	b.counter = 2
+	if err := b.saveLocked(); err != nil {
+		b.mu.Unlock()
+		t.Fatalf("saveLocked failed: %v", err)
+	}
+	b.mu.Unlock()
+	if _, err := os.Stat(brokerStateSnapshotPath()); err != nil {
+		t.Fatalf("expected snapshot after rich save: %v", err)
+	}
+
+	// Simulate a later clobber that keeps the custom office shell but loses live work.
+	clobbered := NewBroker()
+	clobbered.mu.Lock()
+	clobbered.messages = nil
+	clobbered.tasks = nil
+	clobbered.actions = nil
+	clobbered.channels = []teamChannel{
+		{Slug: "general", Name: "general", Members: []string{"ceo", "builder"}},
+		{Slug: "delivery", Name: "delivery", Members: []string{"ceo", "builder"}},
+	}
+	clobbered.members = []officeMember{
+		{Slug: "ceo", Name: "CEO"},
+		{Slug: "builder", Name: "Builder"},
+	}
+	clobbered.counter = 0
+	if err := clobbered.saveLocked(); err != nil {
+		clobbered.mu.Unlock()
+		t.Fatalf("clobbered saveLocked failed: %v", err)
+	}
+	clobbered.mu.Unlock()
+	if _, err := os.Stat(brokerStateSnapshotPath()); err != nil {
+		t.Fatalf("expected snapshot to survive clobbered save: %v", err)
+	}
+	if snap, err := loadBrokerStateFile(brokerStateSnapshotPath()); err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	} else if len(snap.Messages) != 1 || len(snap.Tasks) != 1 || len(snap.Actions) != 1 {
+		t.Fatalf("unexpected snapshot contents: %+v", snap)
+	}
+
+	reloaded := NewBroker()
+	if got := len(reloaded.Messages()); got != 1 {
+		t.Fatalf("expected snapshot recovery to restore 1 message, got %d", got)
+	}
+	if got := len(reloaded.AllTasks()); got != 1 {
+		t.Fatalf("expected snapshot recovery to restore 1 task, got %d", got)
+	}
+	if reloaded.AllTasks()[0].Title != "Create the client brief" {
+		t.Fatalf("unexpected recovered task: %+v", reloaded.AllTasks()[0])
+	}
+	if got := len(reloaded.Actions()); got != 1 {
+		t.Fatalf("expected snapshot recovery to restore actions, got %d", got)
+	}
+}
+
 func TestBrokerSessionModePersistsAndSurvivesReset(t *testing.T) {
 	oldPathFn := brokerStatePath
 	tmpDir := t.TempDir()
@@ -204,6 +269,18 @@ func TestBrokerEventsEndpointStreamsMessages(t *testing.T) {
 	defer func() { brokerStatePath = oldPathFn }()
 
 	b := NewBroker()
+	b.channels = []teamChannel{
+		{
+			Slug:    "general",
+			Name:    "general",
+			Members: []string{"operator"},
+		},
+		{
+			Slug:    "planning",
+			Name:    "planning",
+			Members: []string{"operator", "planner"},
+		},
+	}
 	if err := b.StartOnPort(0); err != nil {
 		t.Fatalf("failed to start broker: %v", err)
 	}
@@ -1915,6 +1992,375 @@ func TestBrokerTaskPlanAssignsWorktreeForLocalWorktreeTask(t *testing.T) {
 	}
 }
 
+func TestBrokerTaskCreateAddsAssignedOwnerToChannelMembers(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "youtube-factory", "operator", "Operator")
+	if existing := b.findMemberLocked("builder"); existing == nil {
+		member := officeMember{Slug: "builder", Name: "Builder"}
+		applyOfficeMemberDefaults(&member)
+		b.members = append(b.members, member)
+	}
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("failed to start broker: %v", err)
+	}
+	defer b.Stop()
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	body, _ := json.Marshal(map[string]any{
+		"action":     "create",
+		"channel":    "youtube-factory",
+		"title":      "Restore remotion dependency path",
+		"details":    "Unblock the real render lane.",
+		"created_by": "operator",
+		"owner":      "builder",
+		"task_type":  "feature",
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/tasks", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("task create request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected status %d: %s", resp.StatusCode, raw)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ch := b.findChannelLocked("youtube-factory")
+	if ch == nil {
+		t.Fatal("expected youtube-factory channel to exist")
+	}
+	if !containsString(ch.Members, "builder") {
+		t.Fatalf("expected assigned owner to be added to channel members, got %v", ch.Members)
+	}
+	if containsString(ch.Disabled, "builder") {
+		t.Fatalf("expected assigned owner to be enabled in channel, got disabled=%v", ch.Disabled)
+	}
+}
+
+func TestBrokerResumeTaskUnblocksAndSchedulesOwnerLane(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "client-loop", "operator", "Operator")
+	ensureTestMemberAccess(b, "client-loop", "builder", "Builder")
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "client-loop",
+		Title:         "Retry kickoff send",
+		Details:       "429 RESOURCE_EXHAUSTED. Retry after 2026-04-15T22:00:29.610Z.",
+		Owner:         "builder",
+		CreatedBy:     "operator",
+		TaskType:      "follow_up",
+		ExecutionMode: "live_external",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure planned task: %v reused=%v", err, reused)
+	}
+	if _, changed, err := b.BlockTask(task.ID, "operator", "Provider cooldown"); err != nil || !changed {
+		t.Fatalf("block task: %v changed=%v", err, changed)
+	}
+
+	resumed, changed, err := b.ResumeTask(task.ID, "watchdog", "Retry window passed")
+	if err != nil {
+		t.Fatalf("resume task: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected resume to change task state, got %+v", resumed)
+	}
+	if resumed.Blocked || resumed.Status != "in_progress" {
+		t.Fatalf("expected resumed task to be active, got %+v", resumed)
+	}
+	if resumed.FollowUpAt == "" {
+		t.Fatalf("expected resumed task to have follow-up lifecycle timestamps, got %+v", resumed)
+	}
+}
+
+func TestBrokerResumeTaskQueuesBehindExistingExclusiveOwnerLane(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "client-loop", "operator", "Operator")
+	ensureTestMemberAccess(b, "client-loop", "builder", "Builder")
+
+	active, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "client-loop",
+		Title:         "Send kickoff email",
+		Owner:         "builder",
+		CreatedBy:     "operator",
+		TaskType:      "follow_up",
+		ExecutionMode: "live_external",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure active task: %v reused=%v", err, reused)
+	}
+	task, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "client-loop",
+		Title:         "Send second kickoff email",
+		Owner:         "builder",
+		CreatedBy:     "operator",
+		TaskType:      "follow_up",
+		ExecutionMode: "live_external",
+		DependsOn:     []string{active.ID},
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure queued task: %v reused=%v", err, reused)
+	}
+	if !task.Blocked {
+		t.Fatalf("expected second task to start blocked behind active lane, got %+v", task)
+	}
+	if _, changed, err := b.BlockTask(task.ID, "operator", "provider cooldown"); err != nil || !changed {
+		t.Fatalf("block task: %v changed=%v", err, changed)
+	}
+
+	resumed, changed, err := b.ResumeTask(task.ID, "watchdog", "Retry window passed")
+	if err != nil {
+		t.Fatalf("resume task: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected resume to change task state, got %+v", resumed)
+	}
+	if resumed.Status != "open" || !resumed.Blocked {
+		t.Fatalf("expected resumed task to stay queued behind active lane, got %+v", resumed)
+	}
+	if !containsString(resumed.DependsOn, active.ID) {
+		t.Fatalf("expected resumed task to remain dependent on active lane, got %+v", resumed)
+	}
+}
+
+func TestBrokerUnblockDependentsQueuesExclusiveOwnerLanes(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "youtube-factory", "ceo", "CEO")
+	ensureTestMemberAccess(b, "youtube-factory", "executor", "Executor")
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	b.tasks = []teamTask{
+		{
+			ID:            "task-setup",
+			Channel:       "youtube-factory",
+			Title:         "Finish prerequisite slice",
+			Owner:         "executor",
+			Status:        "done",
+			CreatedBy:     "ceo",
+			TaskType:      "feature",
+			ExecutionMode: "local_worktree",
+			ReviewState:   "approved",
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		},
+		{
+			ID:            "task-32",
+			Channel:       "youtube-factory",
+			Title:         "First dependent lane",
+			Owner:         "executor",
+			Status:        "blocked",
+			Blocked:       true,
+			CreatedBy:     "ceo",
+			TaskType:      "feature",
+			ExecutionMode: "live_external",
+			DependsOn:     []string{"task-setup"},
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		},
+		{
+			ID:            "task-34",
+			Channel:       "youtube-factory",
+			Title:         "Second dependent lane",
+			Owner:         "executor",
+			Status:        "blocked",
+			Blocked:       true,
+			CreatedBy:     "ceo",
+			TaskType:      "feature",
+			ExecutionMode: "live_external",
+			DependsOn:     []string{"task-setup"},
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		},
+		{
+			ID:            "task-80",
+			Channel:       "youtube-factory",
+			Title:         "Third dependent lane",
+			Owner:         "executor",
+			Status:        "blocked",
+			Blocked:       true,
+			CreatedBy:     "ceo",
+			TaskType:      "feature",
+			ExecutionMode: "live_external",
+			DependsOn:     []string{"task-setup"},
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		},
+	}
+
+	b.mu.Lock()
+	b.unblockDependentsLocked("task-setup")
+	got := append([]teamTask(nil), b.tasks...)
+	b.mu.Unlock()
+
+	if got[1].Status != "in_progress" || got[1].Blocked {
+		t.Fatalf("expected first dependent to become active, got %+v", got[1])
+	}
+	for _, task := range got[2:] {
+		if task.Status != "open" || !task.Blocked {
+			t.Fatalf("expected later dependent to stay queued, got %+v", task)
+		}
+		if !containsString(task.DependsOn, "task-32") {
+			t.Fatalf("expected later dependent to queue behind task-32, got %+v", task)
+		}
+	}
+}
+
+func TestBrokerTaskPlanRejectsTheaterTaskInLiveDeliveryLane(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "client-delivery", "operator", "Operator")
+	ensureTestMemberAccess(b, "client-delivery", "builder", "Builder")
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("failed to start broker: %v", err)
+	}
+	defer b.Stop()
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	body, _ := json.Marshal(map[string]any{
+		"channel":    "client-delivery",
+		"created_by": "operator",
+		"tasks": []map[string]any{
+			{
+				"title":          "Generate consulting review packet artifact from the updated blueprint",
+				"details":        "Post the exact local artifact path for the reviewer.",
+				"assignee":       "builder",
+				"task_type":      "feature",
+				"execution_mode": "local_worktree",
+			},
+		},
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/task-plan", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("task plan request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected status %d: %s", resp.StatusCode, raw)
+	}
+}
+
+func TestBrokerTaskCreateRejectsLiveBusinessTheater(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "operator", "Operator")
+	ensureTestMemberAccess(b, "general", "builder", "Builder")
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("failed to start broker: %v", err)
+	}
+	defer b.Stop()
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	body, _ := json.Marshal(map[string]any{
+		"action":         "create",
+		"channel":        "general",
+		"title":          "Create one new Notion proof packet for the client handoff",
+		"details":        "Use live external execution and keep the review bundle in sync.",
+		"created_by":     "operator",
+		"owner":          "builder",
+		"task_type":      "launch",
+		"execution_mode": "live_external",
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/tasks", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("task create request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected theater rejection, got status %d: %s", resp.StatusCode, raw)
+	}
+}
+
+func TestBrokerTaskCompleteRejectsLiveBusinessTheater(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "operator", "Operator")
+	ensureTestMemberAccess(b, "general", "builder", "Builder")
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("failed to start broker: %v", err)
+	}
+	defer b.Stop()
+	b.mu.Lock()
+	b.tasks = []teamTask{{
+		ID:            "task-1",
+		Channel:       "general",
+		Title:         "Create one new Notion proof packet for the client handoff",
+		Details:       "Use live external execution and keep the review bundle in sync.",
+		Owner:         "builder",
+		Status:        "in_progress",
+		CreatedBy:     "operator",
+		TaskType:      "launch",
+		ExecutionMode: "live_external",
+		CreatedAt:     "2026-04-15T00:00:00Z",
+		UpdatedAt:     "2026-04-15T00:00:00Z",
+	}}
+	b.counter = 1
+	b.mu.Unlock()
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	body, _ := json.Marshal(map[string]any{
+		"action":     "complete",
+		"channel":    "general",
+		"id":         "task-1",
+		"created_by": "builder",
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/tasks", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("task complete request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected theater rejection on completion, got status %d: %s", resp.StatusCode, raw)
+	}
+}
+
 func TestBrokerStoresLedgerAndReviewLifecycle(t *testing.T) {
 	oldPrepare := prepareTaskWorktree
 	oldCleanup := cleanupTaskWorktree
@@ -2350,6 +2796,209 @@ func TestBrokerBlockTaskRejectsFalseReadOnlyBlockForWritableWorktree(t *testing.
 	}
 }
 
+func TestBrokerEnsurePlannedTaskQueuesConcurrentExclusiveOwnerWork(t *testing.T) {
+	oldPrepare := prepareTaskWorktree
+	oldCleanup := cleanupTaskWorktree
+	prepareTaskWorktree = func(taskID string) (string, string, error) {
+		return "/tmp/wuphf-task-" + taskID, "wuphf-" + taskID, nil
+	}
+	cleanupTaskWorktree = func(path, branch string) error { return nil }
+	defer func() {
+		prepareTaskWorktree = oldPrepare
+		cleanupTaskWorktree = oldCleanup
+	}()
+
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "executor", "Executor")
+
+	first, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Build the homepage MVP",
+		Details:       "Ship the first runnable site slice.",
+		Owner:         "executor",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure first task: %v reused=%v", err, reused)
+	}
+	second, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "general",
+		Title:         "Define the upload path",
+		Details:       "Wire the next implementation slice after the homepage.",
+		Owner:         "executor",
+		CreatedBy:     "ceo",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure second task: %v reused=%v", err, reused)
+	}
+
+	if first.Status != "in_progress" || first.Blocked {
+		t.Fatalf("expected first task to stay active, got %+v", first)
+	}
+	if second.Status != "open" || !second.Blocked {
+		t.Fatalf("expected second task to queue behind the first, got %+v", second)
+	}
+	if !containsString(second.DependsOn, first.ID) {
+		t.Fatalf("expected second task to depend on first %s, got %+v", first.ID, second.DependsOn)
+	}
+	if !strings.Contains(second.Details, "Queued behind "+first.ID) {
+		t.Fatalf("expected queue note in details, got %+v", second)
+	}
+}
+
+func TestBrokerTaskPlanRoutesLiveBusinessTasksIntoRecentExecutionChannel(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "builder", "Builder")
+	b.channels = append(b.channels, teamChannel{
+		Slug:      "client-loop",
+		Name:      "client-loop",
+		Members:   []string{"ceo", "builder"},
+		CreatedBy: "ceo",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("failed to start broker: %v", err)
+	}
+	defer b.Stop()
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	body, _ := json.Marshal(map[string]any{
+		"channel":    "general",
+		"created_by": "ceo",
+		"tasks": []map[string]any{
+			{
+				"title":          "Create the client-facing operating brief",
+				"assignee":       "builder",
+				"details":        "Move the live client delivery forward in the workspace and leave the customer-ready brief in the execution lane.",
+				"task_type":      "launch",
+				"execution_mode": "office",
+			},
+		},
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/task-plan", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post task plan: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected status %d: %s", resp.StatusCode, raw)
+	}
+
+	var result struct {
+		Tasks []teamTask `json:"tasks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode task plan response: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("expected one task, got %+v", result.Tasks)
+	}
+	if result.Tasks[0].Channel != "client-loop" {
+		t.Fatalf("expected task to route into client-loop, got %+v", result.Tasks[0])
+	}
+}
+
+func TestBrokerTaskPlanReusesExistingActiveLane(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "client-loop", "builder", "Builder")
+	ensureTestMemberAccess(b, "client-loop", "operator", "Operator")
+	for i := range b.channels {
+		if normalizeChannelSlug(b.channels[i].Slug) == "client-loop" {
+			b.channels[i].CreatedBy = "operator"
+			b.channels[i].CreatedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+	}
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("failed to start broker: %v", err)
+	}
+	defer b.Stop()
+
+	existing, reused, err := b.EnsurePlannedTask(plannedTaskInput{
+		Channel:       "client-loop",
+		Title:         "Create live client workspace in Google Drive",
+		Details:       "First pass.",
+		Owner:         "builder",
+		CreatedBy:     "operator",
+		TaskType:      "follow_up",
+		ExecutionMode: "office",
+	})
+	if err != nil || reused {
+		t.Fatalf("ensure initial task: %v reused=%v", err, reused)
+	}
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	body, _ := json.Marshal(map[string]any{
+		"channel":    "general",
+		"created_by": "operator",
+		"tasks": []map[string]any{
+			{
+				"title":          "Create live client workspace in Google Drive",
+				"assignee":       "builder",
+				"details":        "Updated live-work details.",
+				"task_type":      "follow_up",
+				"execution_mode": "office",
+			},
+		},
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/task-plan", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post task plan: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected status %d: %s", resp.StatusCode, raw)
+	}
+
+	var result struct {
+		Tasks []teamTask `json:"tasks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode task plan response: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("expected one task in response, got %+v", result.Tasks)
+	}
+	if result.Tasks[0].ID != existing.ID {
+		t.Fatalf("expected task plan to reuse %s, got %+v", existing.ID, result.Tasks[0])
+	}
+	if got := len(b.AllTasks()); got != 1 {
+		t.Fatalf("expected one durable task after reuse, got %d", got)
+	}
+	if result.Tasks[0].Channel != "client-loop" {
+		t.Fatalf("expected reused task to stay in client-loop, got %+v", result.Tasks[0])
+	}
+	if result.Tasks[0].Details != "Updated live-work details." {
+		t.Fatalf("expected details to update, got %+v", result.Tasks[0])
+	}
+}
+
 func TestBrokerBlockTaskAllowsReadOnlyBlockWhenWriteProbeFails(t *testing.T) {
 	oldPrepare := prepareTaskWorktree
 	oldCleanup := cleanupTaskWorktree
@@ -2621,6 +3270,153 @@ func TestBrokerCreateTaskReusesCompletedDependencyWorktree(t *testing.T) {
 	}
 }
 
+func TestBrokerSyncTaskWorktreeReplacesStaleAssignedPath(t *testing.T) {
+	oldPrepare := prepareTaskWorktree
+	oldCleanup := cleanupTaskWorktree
+	stalePath := t.TempDir()
+	freshPath := filepath.Join(t.TempDir(), "fresh-worktree")
+	var cleaned []string
+	prepareTaskWorktree = func(taskID string) (string, string, error) {
+		return freshPath, "wuphf-" + taskID, nil
+	}
+	cleanupTaskWorktree = func(path, branch string) error {
+		cleaned = append(cleaned, path+"|"+branch)
+		return nil
+	}
+	defer func() {
+		prepareTaskWorktree = oldPrepare
+		cleanupTaskWorktree = oldCleanup
+	}()
+
+	b := NewBroker()
+	task := &teamTask{
+		ID:             "task-80",
+		Title:          "Fix onboarding",
+		Owner:          "executor",
+		Status:         "in_progress",
+		ExecutionMode:  "local_worktree",
+		WorktreePath:   stalePath,
+		WorktreeBranch: "wuphf-stale-task-80",
+	}
+	if err := b.syncTaskWorktreeLocked(task); err != nil {
+		t.Fatalf("syncTaskWorktreeLocked: %v", err)
+	}
+	if task.WorktreePath != freshPath || task.WorktreeBranch != "wuphf-task-80" {
+		t.Fatalf("expected stale worktree to be replaced, got %+v", task)
+	}
+	if len(cleaned) != 1 || !strings.Contains(cleaned[0], stalePath) {
+		t.Fatalf("expected stale worktree cleanup before reprovision, got %v", cleaned)
+	}
+}
+
+func TestBrokerNormalizeLoadedStateRepairsStaleAssignedWorktree(t *testing.T) {
+	oldPrepare := prepareTaskWorktree
+	oldCleanup := cleanupTaskWorktree
+	stalePath := t.TempDir()
+	freshPath := filepath.Join(t.TempDir(), "fresh-worktree")
+	prepareTaskWorktree = func(taskID string) (string, string, error) {
+		return freshPath, "wuphf-" + taskID, nil
+	}
+	cleanupTaskWorktree = func(path, branch string) error { return nil }
+	defer func() {
+		prepareTaskWorktree = oldPrepare
+		cleanupTaskWorktree = oldCleanup
+	}()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	b := NewBroker()
+	b.tasks = []teamTask{{
+		ID:             "task-80",
+		Channel:        "youtube-factory",
+		Title:          "Fix onboarding",
+		Owner:          "executor",
+		Status:         "in_progress",
+		ExecutionMode:  "local_worktree",
+		WorktreePath:   stalePath,
+		WorktreeBranch: "wuphf-stale-task-80",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}}
+
+	b.mu.Lock()
+	b.normalizeLoadedStateLocked()
+	got := b.tasks[0]
+	b.mu.Unlock()
+
+	if got.WorktreePath != freshPath || got.WorktreeBranch != "wuphf-task-80" {
+		t.Fatalf("expected normalize to refresh stale worktree, got %+v", got)
+	}
+}
+
+func TestBrokerUpdatesTaskByIDAcrossChannels(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	b.channels = []teamChannel{
+		{
+			Slug: "general",
+			Name: "general",
+		},
+		{
+			Slug: "planning",
+			Name: "planning",
+		},
+	}
+	handler := b.requireAuth(b.handleTasks)
+	post := func(payload map[string]any) teamTask {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/tasks", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+b.Token())
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		resp := rec.Result()
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Fatalf("unexpected status %d: %s", resp.StatusCode, raw)
+		}
+		var result struct {
+			Task teamTask `json:"task"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("decode task response: %v", err)
+		}
+		return result.Task
+	}
+
+	created := post(map[string]any{
+		"action":     "create",
+		"channel":    "planning",
+		"title":      "Inventory capabilities and approvals",
+		"owner":      "planner",
+		"created_by": "human",
+	})
+	if created.Channel != "planning" {
+		t.Fatalf("expected planning task, got %+v", created)
+	}
+
+	completed := post(map[string]any{
+		"action":     "complete",
+		"channel":    "general",
+		"id":         created.ID,
+		"created_by": "human",
+	})
+	if completed.ID != created.ID {
+		t.Fatalf("expected to update %s, got %+v", created.ID, completed)
+	}
+	if completed.Channel != "planning" {
+		t.Fatalf("expected task channel to remain planning, got %+v", completed)
+	}
+	if completed.Status != "done" && completed.Status != "review" {
+		t.Fatalf("expected task to move forward, got %+v", completed)
+	}
+}
+
 func TestBrokerCompleteAlreadyDoneTaskStaysApproved(t *testing.T) {
 	oldPrepare := prepareTaskWorktree
 	oldCleanup := cleanupTaskWorktree
@@ -2881,6 +3677,135 @@ func TestBrokerRequestsLifecycle(t *testing.T) {
 
 	if b.HasBlockingRequest() {
 		t.Fatal("expected blocking request to clear after answer")
+	}
+}
+
+func TestBrokerRequestAnswerUnblocksDependentTask(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	ensureTestMemberAccess(b, "general", "ceo", "CEO")
+	ensureTestMemberAccess(b, "general", "builder", "Builder")
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("failed to start broker: %v", err)
+	}
+	defer b.Stop()
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	createRequestBody, _ := json.Marshal(map[string]any{
+		"action":   "create",
+		"from":     "ceo",
+		"channel":  "general",
+		"title":    "Approve the launch packet",
+		"question": "Should we proceed with the external launch?",
+		"kind":     "approval",
+		"blocking": true,
+		"required": true,
+		"reply_to": "msg-approval-1",
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/requests", bytes.NewReader(createRequestBody))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 creating request, got %d: %s", resp.StatusCode, raw)
+	}
+	var created struct {
+		Request humanInterview `json:"request"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode request create response: %v", err)
+	}
+	reqID := created.Request.ID
+	if reqID == "" {
+		t.Fatal("expected request id")
+	}
+
+	createTaskBody, _ := json.Marshal(map[string]any{
+		"action":     "create",
+		"channel":    "general",
+		"title":      "Ship the launch packet after approval",
+		"details":    "Continue once the approval request is answered.",
+		"created_by": "ceo",
+		"owner":      "builder",
+		"depends_on": []string{reqID},
+		"task_type":  "launch",
+	})
+	req, _ = http.NewRequest(http.MethodPost, base+"/tasks", bytes.NewReader(createTaskBody))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 creating task, got %d: %s", resp.StatusCode, raw)
+	}
+	var taskResult struct {
+		Task teamTask `json:"task"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&taskResult); err != nil {
+		t.Fatalf("decode task create response: %v", err)
+	}
+	if !taskResult.Task.Blocked {
+		t.Fatalf("expected task to start blocked on request dependency, got %+v", taskResult.Task)
+	}
+
+	answerBody, _ := json.Marshal(map[string]any{
+		"id":        reqID,
+		"choice_id": "approve",
+	})
+	req, _ = http.NewRequest(http.MethodPost, base+"/requests/answer", bytes.NewReader(answerBody))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("answer request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 answering request, got %d: %s", resp.StatusCode, raw)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, base+"/tasks?channel=general", nil)
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get tasks failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var listing struct {
+		Tasks []teamTask `json:"tasks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listing); err != nil {
+		t.Fatalf("decode tasks: %v", err)
+	}
+	var updated *teamTask
+	for i := range listing.Tasks {
+		if listing.Tasks[i].ID == taskResult.Task.ID {
+			updated = &listing.Tasks[i]
+			break
+		}
+	}
+	if updated == nil {
+		t.Fatalf("expected to find task %s after answer", taskResult.Task.ID)
+	}
+	if updated.Blocked {
+		t.Fatalf("expected task to be unblocked after request answer, got %+v", updated)
+	}
+	if updated.Status != "in_progress" {
+		t.Fatalf("expected task to resume in_progress after answer, got %+v", updated)
 	}
 }
 
@@ -3862,6 +4787,89 @@ func TestSkillProposalRejectCallbackArchivesSkill(t *testing.T) {
 	}
 }
 
+func TestRequestAnswerUnblocksReferencedTask(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("start broker: %v", err)
+	}
+	defer b.Stop()
+
+	b.mu.Lock()
+	now := "2026-01-01T00:00:00Z"
+	b.channels = append(b.channels, teamChannel{Slug: "client-loop", Name: "Client Loop"})
+	b.requests = append(b.requests, humanInterview{
+		ID:        "request-11",
+		Kind:      "input",
+		Status:    "pending",
+		From:      "builder",
+		Channel:   "client-loop",
+		Question:  "What exact client name should I use for the Google Drive workspace folder?",
+		Blocking:  true,
+		Required:  true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	b.tasks = append(b.tasks, teamTask{
+		ID:        "task-3",
+		Channel:   "client-loop",
+		Title:     "Create live client workspace in Google Drive",
+		Details:   "Blocked on request-11: exact client name for the workspace folder.",
+		Owner:     "builder",
+		Status:    "blocked",
+		Blocked:   true,
+		CreatedBy: "operator",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	b.mu.Unlock()
+
+	base := fmt.Sprintf("http://%s", b.Addr())
+	answerBody, _ := json.Marshal(map[string]any{
+		"id":          "request-11",
+		"custom_text": "Meridian Growth Studio",
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/requests/answer", bytes.NewReader(answerBody))
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request answer: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if got := b.tasks[0]; got.Blocked {
+		t.Fatalf("expected task to unblock after request answer, got %+v", got)
+	} else {
+		if got.Status != "in_progress" {
+			t.Fatalf("expected task status to move to in_progress, got %+v", got)
+		}
+		if !strings.Contains(got.Details, "Meridian Growth Studio") {
+			t.Fatalf("expected task details to include human answer, got %q", got.Details)
+		}
+	}
+	var found bool
+	for _, action := range b.actions {
+		if action.Kind == "task_unblocked" && action.RelatedID == "task-3" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected task_unblocked action after answering request")
+	}
+}
+
 func TestInvokeSkillTracksInvokerChannelAndExecutionMetadata(t *testing.T) {
 	oldPathFn := brokerStatePath
 	tmpDir := t.TempDir()
@@ -3919,6 +4927,11 @@ func TestInvokeSkillTracksInvokerChannelAndExecutionMetadata(t *testing.T) {
 
 // Test 10: buildPrompt for the lead includes SKILL & AGENT AWARENESS section.
 func TestBuildPromptLeadIncludesSkillAwareness(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
 	l := &Launcher{
 		pack: &agent.PackDefinition{
 			LeadSlug: "ceo",

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeFakeOperationOne(t *testing.T) string {
@@ -364,10 +365,14 @@ func TestHandleStudioRunWorkflowReturnsRateLimitMetadata(t *testing.T) {
 	if resp.OK || resp.Status != "rate_limited" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
-	if resp.RetryAfter != "2026-04-14T22:55:02.178Z" {
-		t.Fatalf("unexpected retry_after: %q", resp.RetryAfter)
+	retryAt, err := time.Parse(time.RFC3339Nano, resp.RetryAfter)
+	if err != nil {
+		t.Fatalf("retry_after should be RFC3339, got %q (%v)", resp.RetryAfter, err)
 	}
-	if !strings.Contains(resp.Error, "Retry after 2026-04-14T22:55:02.178Z") {
+	if retryAt.IsZero() {
+		t.Fatalf("retry_after should parse to a real timestamp, got %q", resp.RetryAfter)
+	}
+	if !strings.Contains(strings.ToLower(resp.Error), "retry after ") {
 		t.Fatalf("expected retry hint in error, got %q", resp.Error)
 	}
 

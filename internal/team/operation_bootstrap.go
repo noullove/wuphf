@@ -587,13 +587,6 @@ func selectOperationBlueprintFile(repoRoot string, profile operationCompanyProfi
 	if len(files) == 0 {
 		return operationBlueprintFile{}, false, nil
 	}
-	if ref := currentOperationBlueprintRef(); ref != "" {
-		for _, file := range files {
-			if file.Blueprint.ID == ref {
-				return file, true, nil
-			}
-		}
-	}
 	query := normalizeOperationBlueprintSelector(strings.Join([]string{
 		profile.BlueprintID,
 		profile.Name,
@@ -612,6 +605,15 @@ func selectOperationBlueprintFile(repoRoot string, profile operationCompanyProfi
 	}
 	if bestScore > 0 {
 		return best, true, nil
+	}
+	if query == "" {
+		if ref := currentOperationBlueprintRef(); ref != "" {
+			for _, file := range files {
+				if file.Blueprint.ID == ref {
+					return file, true, nil
+				}
+			}
+		}
 	}
 	return operationBlueprintFile{}, false, nil
 }

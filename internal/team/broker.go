@@ -441,6 +441,7 @@ type Broker struct {
 	webUIOrigins        []string // allowed CORS origins for web UI (set by ServeWebUI)
 	runtimeProvider     string   // "codex" or "claude" — set by launcher
 	packSlug            string   // active agent pack slug ("founding-team", "revops", ...) — set by launcher
+	blankSlateLaunch    bool     // start without a saved blueprint and synthesize the first operation
 	generateMemberFn    func(prompt string) (generatedMemberTemplate, error)
 	generateChannelFn   func(prompt string) (generatedChannelTemplate, error)
 	policies            []officePolicy // active office operating rules
@@ -513,6 +514,66 @@ func rejectFalseLocalWorktreeBlock(task *teamTask, reason string) error {
 	return nil
 }
 
+func taskRequiresExclusiveOwnerTurn(task *teamTask) bool {
+	if task == nil {
+		return false
+	}
+	if strings.TrimSpace(task.Owner) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(task.ExecutionMode)) {
+	case "local_worktree", "live_external":
+		return true
+	default:
+		return false
+	}
+}
+
+func taskStatusConsumesExclusiveOwnerTurn(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "in_progress", "review":
+		return true
+	default:
+		return false
+	}
+}
+
+func stringSliceContainsFold(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseBrokerTimestamp(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return ts.UTC()
+}
+
+func taskChannelCandidateOwnerAllowed(ch *teamChannel, owner string) bool {
+	if ch == nil {
+		return false
+	}
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return true
+	}
+	return stringSliceContainsFold(ch.Members, owner) || strings.EqualFold(strings.TrimSpace(ch.CreatedBy), owner)
+}
+
 func (b *Broker) syncTaskWorktreeLocked(task *teamTask) error {
 	if task == nil {
 		return nil
@@ -528,7 +589,14 @@ func (b *Broker) syncTaskWorktreeLocked(task *teamTask) error {
 	}
 	if taskNeedsLocalWorktree(task) {
 		if strings.TrimSpace(task.WorktreePath) != "" && strings.TrimSpace(task.WorktreeBranch) != "" {
-			return nil
+			if taskWorktreeSourceLooksUsable(task.WorktreePath) {
+				return nil
+			}
+			if err := cleanupTaskWorktree(task.WorktreePath, task.WorktreeBranch); err != nil {
+				return err
+			}
+			task.WorktreePath = ""
+			task.WorktreeBranch = ""
 		}
 		if path, branch := b.reusableDependencyWorktreeLocked(task); path != "" && branch != "" {
 			task.WorktreePath = path
@@ -595,6 +663,110 @@ func (b *Broker) reusableDependencyWorktreeLocked(task *teamTask) (string, strin
 		}
 	}
 	return fallbackPath, fallbackBranch
+}
+
+func (b *Broker) activeExclusiveOwnerTaskLocked(owner, excludeTaskID string) *teamTask {
+	owner = strings.TrimSpace(owner)
+	excludeTaskID = strings.TrimSpace(excludeTaskID)
+	if b == nil || owner == "" {
+		return nil
+	}
+	for i := range b.tasks {
+		task := &b.tasks[i]
+		if excludeTaskID != "" && strings.TrimSpace(task.ID) == excludeTaskID {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(task.Owner), owner) {
+			continue
+		}
+		if !taskRequiresExclusiveOwnerTurn(task) {
+			continue
+		}
+		if !taskStatusConsumesExclusiveOwnerTurn(task.Status) {
+			continue
+		}
+		return task
+	}
+	return nil
+}
+
+func (b *Broker) queueTaskBehindActiveOwnerLaneLocked(task *teamTask) {
+	if b == nil || task == nil {
+		return
+	}
+	if !taskRequiresExclusiveOwnerTurn(task) {
+		return
+	}
+	if !taskStatusConsumesExclusiveOwnerTurn(task.Status) {
+		return
+	}
+	active := b.activeExclusiveOwnerTaskLocked(task.Owner, task.ID)
+	if active == nil {
+		return
+	}
+	if !stringSliceContainsFold(task.DependsOn, active.ID) {
+		task.DependsOn = append(task.DependsOn, active.ID)
+	}
+	task.Blocked = true
+	task.Status = "open"
+	queueNote := fmt.Sprintf("Queued behind %s so @%s only carries one active %s lane at a time.", active.ID, strings.TrimSpace(task.Owner), strings.TrimSpace(task.ExecutionMode))
+	switch existing := strings.TrimSpace(task.Details); {
+	case existing == "":
+		task.Details = queueNote
+	case !strings.Contains(existing, queueNote):
+		task.Details = existing + "\n\n" + queueNote
+	}
+}
+
+func (b *Broker) preferredTaskChannelLocked(requestedChannel, createdBy, owner, title, details string) string {
+	channel := normalizeChannelSlug(requestedChannel)
+	if channel == "" {
+		channel = "general"
+	}
+	if channel != "general" || b == nil {
+		return channel
+	}
+	createdBy = strings.TrimSpace(createdBy)
+	if createdBy == "" {
+		return channel
+	}
+	probe := teamTask{
+		Channel: channel,
+		Owner:   strings.TrimSpace(owner),
+		Title:   strings.TrimSpace(title),
+		Details: strings.TrimSpace(details),
+	}
+	if !taskLooksLikeLiveBusinessObjective(&probe) {
+		return channel
+	}
+	now := time.Now().UTC()
+	var best *teamChannel
+	var bestCreated time.Time
+	for i := range b.channels {
+		ch := &b.channels[i]
+		slug := normalizeChannelSlug(ch.Slug)
+		if slug == "" || slug == "general" || ch.isDM() {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(ch.CreatedBy), createdBy) {
+			continue
+		}
+		if !taskChannelCandidateOwnerAllowed(ch, owner) {
+			continue
+		}
+		createdAt := parseBrokerTimestamp(ch.CreatedAt)
+		if !createdAt.IsZero() && now.Sub(createdAt) > 20*time.Minute {
+			continue
+		}
+		if best == nil || (!createdAt.IsZero() && createdAt.After(bestCreated)) {
+			best = ch
+			bestCreated = createdAt
+		}
+	}
+	if best == nil {
+		return channel
+	}
+	return normalizeChannelSlug(best.Slug)
 }
 
 // generateToken returns a cryptographically random hex token.
@@ -1801,29 +1973,71 @@ func (b *Broker) Reset() {
 	b.sessionMode = mode
 	b.oneOnOneAgent = agent
 	_ = b.saveLocked()
+	_ = os.Remove(brokerStateSnapshotPath())
 	b.mu.Unlock()
 }
 
 func defaultBrokerStatePath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := config.RuntimeHomeDir()
+	if home == "" {
 		return filepath.Join(".wuphf", "team", "broker-state.json")
 	}
 	return filepath.Join(home, ".wuphf", "team", "broker-state.json")
 }
 
-func (b *Broker) loadState() error {
-	path := brokerStatePath()
+func brokerStateSnapshotPath() string {
+	return brokerStatePath() + ".last-good"
+}
+
+func loadBrokerStateFile(path string) (brokerState, error) {
+	var state brokerState
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
+		return state, err
 	}
-	var state brokerState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return err
+		return state, err
+	}
+	return state, nil
+}
+
+func brokerStateActivityScore(state brokerState) int {
+	score := 0
+	score += len(state.Messages) * 10
+	score += len(state.Tasks) * 20
+	score += len(activeRequests(state.Requests)) * 10
+	score += len(state.Actions) * 4
+	score += len(state.Signals) * 4
+	score += len(state.Decisions) * 4
+	score += len(state.Skills) * 2
+	score += len(state.Policies)
+	for _, ns := range state.SharedMemory {
+		score += len(ns)
+	}
+	if state.PendingInterview != nil {
+		score += 5
+	}
+	return score
+}
+
+func brokerStateShouldSnapshot(state brokerState) bool {
+	return brokerStateActivityScore(state) > 0
+}
+
+func (b *Broker) loadState() error {
+	path := brokerStatePath()
+	state, err := loadBrokerStateFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		state = brokerState{}
+	}
+	snapshotPath := brokerStateSnapshotPath()
+	if snapshot, snapErr := loadBrokerStateFile(snapshotPath); snapErr == nil {
+		if brokerStateActivityScore(snapshot) > brokerStateActivityScore(state) {
+			state = snapshot
+		}
 	}
 	b.messages = state.Messages
 	b.members = state.Members
@@ -1881,8 +2095,12 @@ func (b *Broker) loadState() error {
 
 func (b *Broker) saveLocked() error {
 	path := brokerStatePath()
+	snapshotPath := brokerStateSnapshotPath()
 	if len(b.messages) == 0 && len(b.tasks) == 0 && len(activeRequests(b.requests)) == 0 && len(b.actions) == 0 && len(b.signals) == 0 && len(b.decisions) == 0 && len(b.watchdogs) == 0 && len(b.policies) == 0 && len(b.scheduler) == 0 && len(b.skills) == 0 && len(b.sharedMemory) == 0 && isDefaultChannelState(b.channels) && isDefaultOfficeMemberState(b.members) && b.counter == 0 && b.notificationSince == "" && b.insightsSince == "" && usageStateIsZero(b.usage) && b.sessionMode == SessionModeOffice && b.oneOnOneAgent == DefaultOneOnOneAgent {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Remove(snapshotPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
@@ -1932,7 +2150,19 @@ func (b *Broker) saveLocked() error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if brokerStateShouldSnapshot(state) {
+		snapshotTmp := snapshotPath + ".tmp"
+		if err := os.WriteFile(snapshotTmp, data, 0o600); err != nil {
+			return err
+		}
+		if err := os.Rename(snapshotTmp, snapshotPath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func defaultOfficeMembers() []officeMember {
@@ -2216,7 +2446,10 @@ func (b *Broker) normalizeLoadedStateLocked() {
 			b.tasks[i].Channel = "general"
 		}
 		normalizeTaskPlan(&b.tasks[i])
+		b.ensureTaskOwnerChannelMembershipLocked(b.tasks[i].Channel, b.tasks[i].Owner)
+		b.queueTaskBehindActiveOwnerLaneLocked(&b.tasks[i])
 		b.scheduleTaskLifecycleLocked(&b.tasks[i])
+		_ = b.syncTaskWorktreeLocked(&b.tasks[i])
 	}
 	b.pendingInterview = firstBlockingRequest(b.requests)
 }
@@ -2753,6 +2986,34 @@ func (b *Broker) enabledChannelMembersLocked(channel string, candidates []string
 		}
 	}
 	return out
+}
+
+func (b *Broker) ensureTaskOwnerChannelMembershipLocked(channel, owner string) {
+	channel = normalizeChannelSlug(channel)
+	owner = normalizeChannelSlug(owner)
+	if channel == "" || owner == "" {
+		return
+	}
+	if b.findMemberLocked(owner) == nil {
+		return
+	}
+	ch := b.findChannelLocked(channel)
+	if ch == nil {
+		return
+	}
+	if !containsString(ch.Members, owner) {
+		ch.Members = uniqueSlugs(append(ch.Members, owner))
+		ch.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if len(ch.Disabled) > 0 {
+		filtered := ch.Disabled[:0]
+		for _, disabled := range ch.Disabled {
+			if disabled != owner {
+				filtered = append(filtered, disabled)
+			}
+		}
+		ch.Disabled = filtered
+	}
 }
 
 func usageStateIsZero(state teamUsageState) bool {
@@ -5210,7 +5471,7 @@ func applyUsageEvent(dst *usageTotals, event usageEvent) {
 	dst.Requests++
 }
 
-// RecordAgentUsage records token usage from a Claude stream result for a given agent.
+// RecordAgentUsage records token usage from a provider stream result for a given agent.
 func (b *Broker) RecordAgentUsage(slug, model string, usage provider.ClaudeUsage) {
 	event := usageEvent{
 		AgentSlug:           slug,
@@ -6282,6 +6543,7 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 			if existing.ThreadID == "" && strings.TrimSpace(body.ThreadID) != "" {
 				existing.ThreadID = strings.TrimSpace(body.ThreadID)
 			}
+			b.ensureTaskOwnerChannelMembershipLocked(channel, existing.Owner)
 			existing.UpdatedAt = now
 			b.scheduleTaskLifecycleLocked(existing)
 			if err := b.syncTaskWorktreeLocked(existing); err != nil {
@@ -6324,6 +6586,12 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 		} else if task.Owner != "" {
 			task.Status = "in_progress"
 		}
+		b.ensureTaskOwnerChannelMembershipLocked(channel, task.Owner)
+		b.queueTaskBehindActiveOwnerLaneLocked(&task)
+		if err := rejectTheaterTaskForLiveBusiness(&task); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		b.scheduleTaskLifecycleLocked(&task)
 		if err := b.syncTaskWorktreeLocked(&task); err != nil {
 			http.Error(w, "failed to manage task worktree", http.StatusInternalServerError)
@@ -6340,14 +6608,13 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	requestedID := strings.TrimSpace(body.ID)
 	for i := range b.tasks {
-		if b.tasks[i].ID != strings.TrimSpace(body.ID) {
-			continue
-		}
-		if normalizeChannelSlug(b.tasks[i].Channel) != channel {
+		if b.tasks[i].ID != requestedID {
 			continue
 		}
 		task := &b.tasks[i]
+		taskChannel := normalizeChannelSlug(task.Channel)
 		switch action {
 		case "claim", "assign":
 			if strings.TrimSpace(body.Owner) == "" {
@@ -6430,7 +6697,13 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 		if worktreeBranch := strings.TrimSpace(body.WorktreeBranch); worktreeBranch != "" {
 			task.WorktreeBranch = worktreeBranch
 		}
+		b.ensureTaskOwnerChannelMembershipLocked(taskChannel, task.Owner)
+		b.queueTaskBehindActiveOwnerLaneLocked(task)
 		task.UpdatedAt = now
+		if err := rejectTheaterTaskForLiveBusiness(task); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if task.Status == "done" {
 			b.unblockDependentsLocked(task.ID)
 		}
@@ -6439,7 +6712,7 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to manage task worktree", http.StatusInternalServerError)
 			return
 		}
-		b.appendActionLocked("task_updated", "office", channel, strings.TrimSpace(body.CreatedBy), truncateSummary(task.Title+" ["+task.Status+"]", 140), task.ID)
+		b.appendActionLocked("task_updated", "office", taskChannel, strings.TrimSpace(body.CreatedBy), truncateSummary(task.Title+" ["+task.Status+"]", 140), task.ID)
 		if err := b.saveLocked(); err != nil {
 			http.Error(w, "failed to persist broker state", http.StatusInternalServerError)
 			return
@@ -6490,11 +6763,74 @@ func (b *Broker) BlockTask(taskID, actor, reason string) (teamTask, bool, error)
 		task.Status = "blocked"
 		task.Blocked = true
 		task.UpdatedAt = now
+		if err := rejectTheaterTaskForLiveBusiness(task); err != nil {
+			return *task, false, err
+		}
 		b.scheduleTaskLifecycleLocked(task)
 		if err := b.syncTaskWorktreeLocked(task); err != nil {
 			return teamTask{}, false, err
 		}
 		b.appendActionLocked("task_updated", "office", normalizeChannelSlug(task.Channel), actor, truncateSummary(task.Title+" ["+task.Status+"]", 140), task.ID)
+		if err := b.saveLocked(); err != nil {
+			return teamTask{}, false, err
+		}
+		return *task, true, nil
+	}
+
+	return teamTask{}, false, fmt.Errorf("task not found")
+}
+
+func (b *Broker) ResumeTask(taskID, actor, reason string) (teamTask, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	id := strings.TrimSpace(taskID)
+	if id == "" {
+		return teamTask{}, false, fmt.Errorf("task id required")
+	}
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "system"
+	}
+	reason = strings.TrimSpace(reason)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	for i := range b.tasks {
+		task := &b.tasks[i]
+		if task.ID != id {
+			continue
+		}
+		changed := false
+		if task.Blocked {
+			task.Blocked = false
+			changed = true
+		}
+		if strings.EqualFold(strings.TrimSpace(task.Status), "blocked") {
+			if strings.TrimSpace(task.Owner) != "" {
+				task.Status = "in_progress"
+			} else {
+				task.Status = "open"
+			}
+			changed = true
+		}
+		if !changed {
+			return *task, false, nil
+		}
+		if reason != "" && !strings.Contains(task.Details, reason) {
+			task.Details = strings.TrimSpace(task.Details)
+			if task.Details != "" {
+				task.Details += "\n\n"
+			}
+			task.Details += reason
+		}
+		b.ensureTaskOwnerChannelMembershipLocked(task.Channel, task.Owner)
+		b.queueTaskBehindActiveOwnerLaneLocked(task)
+		task.UpdatedAt = now
+		b.scheduleTaskLifecycleLocked(task)
+		if err := b.syncTaskWorktreeLocked(task); err != nil {
+			return teamTask{}, false, err
+		}
+		b.appendActionLocked("task_unblocked", "office", normalizeChannelSlug(task.Channel), actor, truncateSummary(task.Title+" resumed", 140), task.ID)
 		if err := b.saveLocked(); err != nil {
 			return teamTask{}, false, err
 		}
@@ -6525,14 +6861,14 @@ func (b *Broker) handleTaskPlan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	channel := normalizeChannelSlug(body.Channel)
-	if channel == "" {
-		channel = "general"
-	}
 	createdBy := strings.TrimSpace(body.CreatedBy)
 	if createdBy == "" || len(body.Tasks) == 0 {
 		http.Error(w, "created_by and tasks required", http.StatusBadRequest)
 		return
+	}
+	channel := normalizeChannelSlug(body.Channel)
+	if channel == "" {
+		channel = "general"
 	}
 
 	b.mu.Lock()
@@ -6548,9 +6884,11 @@ func (b *Broker) handleTaskPlan(w http.ResponseWriter, r *http.Request) {
 	created := make([]teamTask, 0, len(body.Tasks))
 
 	for _, item := range body.Tasks {
-		b.counter++
-		taskID := fmt.Sprintf("task-%d", b.counter)
-		titleToID[strings.TrimSpace(item.Title)] = taskID
+		taskChannel := b.preferredTaskChannelLocked(channel, createdBy, item.Assignee, item.Title, item.Details)
+		if b.findChannelLocked(taskChannel) == nil {
+			http.Error(w, "channel not found", http.StatusNotFound)
+			return
+		}
 
 		// Resolve depends_on: accept both task IDs and titles
 		resolvedDeps := make([]string, 0, len(item.DependsOn))
@@ -6562,10 +6900,53 @@ func (b *Broker) handleTaskPlan(w http.ResponseWriter, r *http.Request) {
 				resolvedDeps = append(resolvedDeps, dep) // assume it's a task ID
 			}
 		}
+		if existing := b.findReusableTaskLocked(taskReuseMatch{
+			Channel: taskChannel,
+			Title:   strings.TrimSpace(item.Title),
+			Owner:   strings.TrimSpace(item.Assignee),
+		}); existing != nil {
+			titleToID[strings.TrimSpace(item.Title)] = existing.ID
+			if details := strings.TrimSpace(item.Details); details != "" {
+				existing.Details = details
+			}
+			if taskType := strings.TrimSpace(item.TaskType); taskType != "" {
+				existing.TaskType = taskType
+			}
+			if executionMode := strings.TrimSpace(item.ExecutionMode); executionMode != "" {
+				existing.ExecutionMode = executionMode
+			}
+			existing.DependsOn = resolvedDeps
+			if len(existing.DependsOn) > 0 && b.hasUnresolvedDepsLocked(existing) {
+				existing.Blocked = true
+				existing.Status = "open"
+			} else if strings.TrimSpace(existing.Owner) != "" {
+				existing.Blocked = false
+				existing.Status = "in_progress"
+			}
+			b.ensureTaskOwnerChannelMembershipLocked(taskChannel, existing.Owner)
+			b.queueTaskBehindActiveOwnerLaneLocked(existing)
+			existing.UpdatedAt = now
+			if err := rejectTheaterTaskForLiveBusiness(existing); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			b.scheduleTaskLifecycleLocked(existing)
+			if err := b.syncTaskWorktreeLocked(existing); err != nil {
+				http.Error(w, "failed to manage task worktree", http.StatusInternalServerError)
+				return
+			}
+			b.appendActionLocked("task_updated", "office", taskChannel, createdBy, truncateSummary(existing.Title+" ["+existing.Status+"]", 140), existing.ID)
+			created = append(created, *existing)
+			continue
+		}
+
+		b.counter++
+		taskID := fmt.Sprintf("task-%d", b.counter)
+		titleToID[strings.TrimSpace(item.Title)] = taskID
 
 		task := teamTask{
 			ID:            taskID,
-			Channel:       channel,
+			Channel:       taskChannel,
 			Title:         strings.TrimSpace(item.Title),
 			Details:       strings.TrimSpace(item.Details),
 			Owner:         strings.TrimSpace(item.Assignee),
@@ -6583,13 +6964,19 @@ func (b *Broker) handleTaskPlan(w http.ResponseWriter, r *http.Request) {
 		if len(resolvedDeps) > 0 && b.hasUnresolvedDepsLocked(&task) {
 			task.Blocked = true
 		}
+		b.ensureTaskOwnerChannelMembershipLocked(taskChannel, task.Owner)
+		b.queueTaskBehindActiveOwnerLaneLocked(&task)
+		if err := rejectTheaterTaskForLiveBusiness(&task); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		b.scheduleTaskLifecycleLocked(&task)
 		if err := b.syncTaskWorktreeLocked(&task); err != nil {
 			http.Error(w, "failed to manage task worktree", http.StatusInternalServerError)
 			return
 		}
 		b.tasks = append(b.tasks, task)
-		b.appendActionLocked("task_created", "office", channel, createdBy, truncateSummary(task.Title, 140), task.ID)
+		b.appendActionLocked("task_created", "office", taskChannel, createdBy, truncateSummary(task.Title, 140), task.ID)
 		created = append(created, task)
 	}
 
@@ -6704,10 +7091,7 @@ func (b *Broker) handleTaskAck(w http.ResponseWriter, r *http.Request) {
 func (b *Broker) EnsureTask(channel, title, details, owner, createdBy, threadID string, dependsOn ...string) (teamTask, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	channel = normalizeChannelSlug(channel)
-	if channel == "" {
-		channel = "general"
-	}
+	channel = b.preferredTaskChannelLocked(channel, createdBy, owner, title, details)
 	if b.findChannelLocked(channel) == nil {
 		return teamTask{}, false, fmt.Errorf("channel not found")
 	}
@@ -6733,7 +7117,12 @@ func (b *Broker) EnsureTask(channel, title, details, owner, createdBy, threadID 
 		if existing.ThreadID == "" && strings.TrimSpace(threadID) != "" {
 			existing.ThreadID = strings.TrimSpace(threadID)
 		}
+		b.ensureTaskOwnerChannelMembershipLocked(channel, existing.Owner)
 		existing.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		b.queueTaskBehindActiveOwnerLaneLocked(existing)
+		if err := rejectTheaterTaskForLiveBusiness(existing); err != nil {
+			return teamTask{}, false, err
+		}
 		b.scheduleTaskLifecycleLocked(existing)
 		if err := b.syncTaskWorktreeLocked(existing); err != nil {
 			return teamTask{}, false, err
@@ -6762,6 +7151,11 @@ func (b *Broker) EnsureTask(channel, title, details, owner, createdBy, threadID 
 		task.Blocked = true
 	} else if task.Owner != "" {
 		task.Status = "in_progress"
+	}
+	b.ensureTaskOwnerChannelMembershipLocked(channel, task.Owner)
+	b.queueTaskBehindActiveOwnerLaneLocked(&task)
+	if err := rejectTheaterTaskForLiveBusiness(&task); err != nil {
+		return teamTask{}, false, err
 	}
 	b.scheduleTaskLifecycleLocked(&task)
 	if err := b.syncTaskWorktreeLocked(&task); err != nil {
@@ -6794,10 +7188,7 @@ type plannedTaskInput struct {
 func (b *Broker) EnsurePlannedTask(input plannedTaskInput) (teamTask, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	channel := normalizeChannelSlug(input.Channel)
-	if channel == "" {
-		channel = "general"
-	}
+	channel := b.preferredTaskChannelLocked(input.Channel, input.CreatedBy, input.Owner, input.Title, input.Details)
 	if b.findChannelLocked(channel) == nil {
 		return teamTask{}, false, fmt.Errorf("channel not found")
 	}
@@ -6842,7 +7233,12 @@ func (b *Broker) EnsurePlannedTask(input plannedTaskInput) (teamTask, bool, erro
 		if existing.SourceDecisionID == "" && strings.TrimSpace(input.SourceDecisionID) != "" {
 			existing.SourceDecisionID = strings.TrimSpace(input.SourceDecisionID)
 		}
+		b.ensureTaskOwnerChannelMembershipLocked(channel, existing.Owner)
 		existing.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		b.queueTaskBehindActiveOwnerLaneLocked(existing)
+		if err := rejectTheaterTaskForLiveBusiness(existing); err != nil {
+			return teamTask{}, false, err
+		}
 		b.scheduleTaskLifecycleLocked(existing)
 		if err := b.syncTaskWorktreeLocked(existing); err != nil {
 			return teamTask{}, false, err
@@ -6878,6 +7274,11 @@ func (b *Broker) EnsurePlannedTask(input plannedTaskInput) (teamTask, bool, erro
 	} else if task.Owner != "" {
 		task.Status = "in_progress"
 	}
+	b.ensureTaskOwnerChannelMembershipLocked(channel, task.Owner)
+	b.queueTaskBehindActiveOwnerLaneLocked(&task)
+	if err := rejectTheaterTaskForLiveBusiness(&task); err != nil {
+		return teamTask{}, false, err
+	}
 	b.scheduleTaskLifecycleLocked(&task)
 	if err := b.syncTaskWorktreeLocked(&task); err != nil {
 		return teamTask{}, false, err
@@ -6893,6 +7294,9 @@ func (b *Broker) EnsurePlannedTask(input plannedTaskInput) (teamTask, bool, erro
 // hasUnresolvedDepsLocked returns true if any of the task's dependencies are not done.
 func (b *Broker) hasUnresolvedDepsLocked(task *teamTask) bool {
 	for _, depID := range task.DependsOn {
+		if requestIsResolvedLocked(b.requests, depID) {
+			continue
+		}
 		found := false
 		for j := range b.tasks {
 			if b.tasks[j].ID == depID {
@@ -6936,6 +7340,7 @@ func (b *Broker) unblockDependentsLocked(completedTaskID string) {
 			} else {
 				b.tasks[i].Status = "open"
 			}
+			b.queueTaskBehindActiveOwnerLaneLocked(&b.tasks[i])
 			b.tasks[i].UpdatedAt = now
 			b.scheduleTaskLifecycleLocked(&b.tasks[i])
 			_ = b.syncTaskWorktreeLocked(&b.tasks[i])
@@ -7296,7 +7701,9 @@ func (b *Broker) handlePostRequestAnswer(w http.ResponseWriter, r *http.Request)
 		b.requests[i].RecheckAt = ""
 		b.requests[i].DueAt = ""
 		b.completeSchedulerJobsLocked("request", b.requests[i].ID, b.requests[i].Channel)
+		b.unblockDependentsLocked(b.requests[i].ID)
 		b.pendingInterview = firstBlockingRequest(b.requests)
+		b.unblockTasksForAnsweredRequestLocked(b.requests[i])
 
 		// Skill proposal callback: accept activates the skill, reject archives it.
 		if b.requests[i].Kind == "skill_proposal" {
@@ -7351,6 +7758,63 @@ func (b *Broker) handlePostRequestAnswer(w http.ResponseWriter, r *http.Request)
 	}
 	b.mu.Unlock()
 	http.Error(w, "request not found", http.StatusNotFound)
+}
+
+func (b *Broker) unblockTasksForAnsweredRequestLocked(req humanInterview) {
+	reqID := strings.TrimSpace(req.ID)
+	if reqID == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	answerText := strings.TrimSpace(reqAnswerSummary(req.Answered))
+	for i := range b.tasks {
+		task := &b.tasks[i]
+		if !task.Blocked || strings.EqualFold(strings.TrimSpace(task.Status), "done") {
+			continue
+		}
+		haystack := strings.ToLower(strings.TrimSpace(task.Title + "\n" + task.Details))
+		if !strings.Contains(haystack, strings.ToLower(reqID)) {
+			continue
+		}
+		task.Blocked = false
+		if strings.EqualFold(strings.TrimSpace(task.Status), "blocked") {
+			if strings.TrimSpace(task.Owner) != "" {
+				task.Status = "in_progress"
+			} else {
+				task.Status = "open"
+			}
+		}
+		b.queueTaskBehindActiveOwnerLaneLocked(task)
+		if answerText != "" && !strings.Contains(task.Details, answerText) {
+			task.Details = strings.TrimSpace(task.Details)
+			if task.Details != "" {
+				task.Details += "\n\n"
+			}
+			task.Details += fmt.Sprintf("Human answer for %s: %s", reqID, answerText)
+		}
+		task.UpdatedAt = now
+		b.appendActionLocked(
+			"task_unblocked",
+			"office",
+			task.Channel,
+			req.From,
+			truncateSummary(task.Title+" unblocked by answered "+reqID, 140),
+			task.ID,
+		)
+	}
+}
+
+func reqAnswerSummary(answer *interviewAnswer) string {
+	if answer == nil {
+		return ""
+	}
+	if text := strings.TrimSpace(answer.CustomText); text != "" {
+		return text
+	}
+	if text := strings.TrimSpace(answer.ChoiceText); text != "" {
+		return text
+	}
+	return strings.TrimSpace(answer.ChoiceID)
 }
 
 func (b *Broker) handleInterview(w http.ResponseWriter, r *http.Request) {
