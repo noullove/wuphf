@@ -2641,3 +2641,22 @@ func TestOfficeChangeTaskNotificationsBackfillChannelMembershipTask(t *testing.T
 		t.Fatalf("expected task-4 notification, got %q", notifications[0].Task.ID)
 	}
 }
+
+func TestEngineerPromptMentionsGHPRCreate(t *testing.T) {
+	l := &Launcher{
+		pack: &agent.PackDefinition{
+			LeadSlug: "ceo",
+			Agents: []agent.AgentConfig{
+				{Slug: "ceo", Name: "CEO"},
+				{Slug: "eng", Name: "Engineer", Expertise: []string{"backend", "golang"}},
+			},
+		},
+	}
+	prompt := l.buildPrompt("eng")
+	if !strings.Contains(prompt, "gh pr create") {
+		t.Fatal("engineer prompt must instruct the agent to run `gh pr create` via bash")
+	}
+	if !strings.Contains(prompt, "https://github.com") {
+		t.Fatal("engineer prompt must require pasting the returned GitHub URL into the channel")
+	}
+}

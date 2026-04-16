@@ -62,6 +62,16 @@ func printSubcommandHelp(sub string) {
 		fmt.Fprintln(os.Stderr, "  wuphf import --from paperclip        Auto-detect a running Paperclip")
 		fmt.Fprintln(os.Stderr, "  wuphf import --from <directory>      Directory with state.json")
 		fmt.Fprintln(os.Stderr, "  wuphf import --from <file.json>      Direct path to an export")
+	case "log":
+		fmt.Fprintln(os.Stderr, "wuphf log — show agent task receipts")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Lists recent tasks from ~/.wuphf/office/tasks/ so you can see what")
+		fmt.Fprintln(os.Stderr, "each agent actually did — tool by tool, with timestamps.")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Usage:")
+		fmt.Fprintln(os.Stderr, "  wuphf log                     List recent tasks")
+		fmt.Fprintln(os.Stderr, "  wuphf log <taskID>            Show one task in detail")
+		fmt.Fprintln(os.Stderr, "  wuphf log --agent eng         Filter to one agent")
 	case "mcp-team":
 		fmt.Fprintln(os.Stderr, "wuphf mcp-team — start the team MCP server (used by agents, not humans)")
 		fmt.Fprintln(os.Stderr, "")
@@ -130,6 +140,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  %s init         Install the latest CLI and save setup defaults\n", appName)
 		fmt.Fprintf(os.Stderr, "  %s shred        Stop the running team (Michael will not be happy)\n", appName)
 		fmt.Fprintf(os.Stderr, "  %s import --from paperclip  Import from running Paperclip (auto-detect)\n", appName)
+		fmt.Fprintf(os.Stderr, "  %s log          Show what your agents actually did (task receipts)\n", appName)
 		fmt.Fprintf(os.Stderr, "  %s --cmd <cmd>  Run a command non-interactively\n", appName)
 		fmt.Fprintf(os.Stderr, "\nFlags:\n")
 		printVisibleFlags(os.Stderr)
@@ -237,6 +248,9 @@ func main() {
 			return
 		case "import":
 			runImport(args[1:])
+			return
+		case "log":
+			runLogCmd(args[1:])
 			return
 		}
 	}

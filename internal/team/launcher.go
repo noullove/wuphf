@@ -190,7 +190,25 @@ func (l *Launcher) Preflight() error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return fmt.Errorf("claude not found. Install: npm install -g @anthropic-ai/claude-code")
 	}
+	if _, _, note := checkGHCapability(); note != "" {
+		fmt.Fprintf(os.Stderr, "note: %s\n", note)
+	}
 	return nil
+}
+
+// checkGHCapability checks whether the gh CLI is installed and authenticated.
+// It returns a soft-warning note when either condition is not met; callers
+// should print the note but must NOT treat it as a fatal error — agents can
+// still work locally without gh. Only PR-opening will be unavailable.
+func checkGHCapability() (installed bool, authed bool, note string) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return false, false, "gh CLI not found in PATH; agents won't be able to open real PRs. Install from https://cli.github.com."
+	}
+	cmd := exec.Command("gh", "auth", "status")
+	if err := cmd.Run(); err != nil {
+		return true, false, "gh installed but not authenticated; run `gh auth login` so agents can open real PRs."
+	}
+	return true, true, ""
 }
 
 // Launch creates the tmux session with:
@@ -3121,6 +3139,9 @@ func (l *Launcher) buildPrompt(slug string) string {
 		sb.WriteString("11d. When a task calls for Slack, Notion, Drive, or another connected system, use the `team_action_*` tools first. Do NOT probe localhost broker routes, curl the provider directly, or fall back to shell-side API experiments when the office action tools can do the job.\n")
 		sb.WriteString("11e. Capability-gap rule: if the work is blocked because the needed specialist, channel, skill, or tool path does not exist yet, treat that gap as the next real work item. Do not fall back to a review bundle, proof packet, artifact shell, or local substitute deliverable. Create the missing specialist with team_member first; if the work will span more than one turn, create the missing execution channel with team_channel; propose or update the missing skill block in the same turn; and if the blocker is a tool or provider gap, open a tool-discovery/research lane named for the exact tool you need so the office can discover, validate, and enable it. Example: if the work needs video generation and you do not already have a usable path, create a discovery lane for Remotion or the exact video tool before drafting any deliverable shell.\n")
 		sb.WriteString("11f. Task hygiene rule: if a live business lane gets named or reframed as a review packet, proof artifact, blueprint-derived scaffold, rubric, or other internal shell, rewrite that lane in the same turn. Replace it with either the next real deliverable/customer-facing/business-facing step or the exact capability-enablement task that unblocks that step.\n")
+		if codingAgentSlugs[slug] {
+			sb.WriteString("11g. When you commit to opening a pull request, actually open it. Run `gh pr create --title \"<short title>\" --body \"<body>\" --head \"<your-branch>\" --base main` via the bash tool. Paste the returned URL into your channel message so the team can click through. Do not claim a PR is open unless the bash output shows a https://github.com/... URL.\n")
+		}
 		if noNex {
 			sb.WriteString("12. Don't fake outside memory. Surface uncertainty in-channel and keep outcomes explicit in-thread.\n")
 			sb.WriteString("13. Once you have posted the needed update for the current packet, stop. A later pushed notification will wake you again if more is needed.\n\n")
@@ -3746,6 +3767,9 @@ func (l *Launcher) PreflightWeb() error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return fmt.Errorf("claude not found in PATH. Install Claude Code CLI first")
 	}
+	if _, _, note := checkGHCapability(); note != "" {
+		fmt.Fprintf(os.Stderr, "note: %s\n", note)
+	}
 	return nil
 }
 
@@ -3941,4 +3965,27 @@ func (l *Launcher) runBackgroundAgent(slug, cmdStr string) {
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// postEscalation writes a system message to #general when an agent is stuck
+// or has blown its retry budget. The Slack-style UI renders this as a normal
+// message so humans see it without needing to open a panel.
+func (l *Launcher) postEscalation(slug, taskID string, reason agent.EscalationReason, detail string) {
+	if l.broker == nil {
+		return
+	}
+	who := strings.TrimSpace(slug)
+	if who == "" {
+		who = "an agent"
+	}
+	var body string
+	switch reason {
+	case agent.EscalationStuck:
+		body = fmt.Sprintf("Heads up: %s looks stuck. Task %s — %s. Needs eyes.", who, taskID, detail)
+	case agent.EscalationMaxRetries:
+		body = fmt.Sprintf("Heads up: %s keeps erroring on task %s. Last error: %s. Needs eyes.", who, taskID, detail)
+	default:
+		body = fmt.Sprintf("Heads up: %s escalation on %s: %s", who, taskID, detail)
+	}
+	l.broker.PostSystemMessage("general", body, "escalation")
 }

@@ -2286,6 +2286,7 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
       <div class="app-panel" id="app-calendar"></div>
       <div class="app-panel" id="app-skills"></div>
       <div class="app-panel" id="app-artifacts"></div>
+      <div class="app-panel" id="app-receipts"></div>
       <div class="recovery-panel" id="recovery-panel"></div>
       <div class="threads-view" id="threads-view"></div>
       <div class="agents-grid-view" id="agents-grid-view"></div>
@@ -2732,6 +2733,14 @@ var WuphfAPI = (function() {
   }
   function getSkills() { return get('/skills'); }
   function getUsage() { return get('/usage'); }
+  function getAgentLogs(opts) {
+    if (opts && opts.task) {
+      return get('/agent-logs', { task: opts.task });
+    }
+    var params = {};
+    if (opts && opts.limit) params.limit = String(opts.limit);
+    return get('/agent-logs', params);
+  }
   function getMemory(channel) {
     return get('/memory', {
       channel: channel || currentChannel || 'general'
@@ -2790,7 +2799,8 @@ var WuphfAPI = (function() {
     getStudioBootstrapPackage: getStudioBootstrapPackage,
     generateStudioPackage: generateStudioPackage,
     runStudioWorkflow: runStudioWorkflow,
-    sseURL: sseURL
+    sseURL: sseURL,
+    getAgentLogs: getAgentLogs
   };
 })();
 
@@ -2837,6 +2847,7 @@ var SIDEBAR_APPS = [
   { id: 'calendar',     icon: '\uD83D\uDCC5', name: 'Calendar' },
   { id: 'skills',       icon: '\u26A1', name: 'Skills' },
   { id: 'activity',     icon: '\uD83D\uDCE6', name: 'Activity' },
+  { id: 'receipts',     icon: '\uD83E\uDDFE', name: 'Receipts' },
   { id: 'health-check', icon: '\uD83D\uDD0D', name: 'Health Check' },
 ];
 
@@ -3973,7 +3984,7 @@ function _cleanupAllViews() {
   if (typeof recoveryViewOpen !== 'undefined' && recoveryViewOpen) closeRecoveryView();
 
   // Hide ALL app panels
-  var allAppIds = ['app-studio', 'app-tasks', 'app-requests', 'app-policies', 'app-calendar', 'app-skills', 'app-activity', 'app-artifacts'];
+  var allAppIds = ['app-studio', 'app-tasks', 'app-requests', 'app-policies', 'app-calendar', 'app-skills', 'app-activity', 'app-artifacts', 'app-receipts'];
   allAppIds.forEach(function(pid) {
     var p = document.getElementById(pid);
     if (p) { p.classList.remove('active'); p.style.display = 'none'; }
@@ -6030,6 +6041,7 @@ function renderAppContent(appId) {
   else if (appId === 'calendar') renderCalendarApp(panel);
   else if (appId === 'skills') renderSkillsApp(panel);
   else if (appId === 'artifacts' || appId === 'activity') renderArtifactsApp(panel);
+  else if (appId === 'receipts') renderReceiptsApp(panel);
 }
 function renderTasksApp(panel) {
   if (!brokerConnected) {
@@ -6658,6 +6670,136 @@ function renderArtifactsApp(panel) {
   }).catch(function() {
     panel.textContent = '';
     panel.appendChild(el('div', { className: 'request-empty' }, 'Could not load office activity.'));
+  });
+}
+
+function renderReceiptsApp(panel) {
+  if (!brokerConnected) {
+    panel.appendChild(el('div', { className: 'request-empty' }, 'Connect to broker to see receipts.'));
+    return;
+  }
+  panel.style.overflow = 'hidden';
+  panel.style.display = 'flex';
+  panel.style.flexDirection = 'column';
+
+  var header = el('div', { style: { padding: '16px 20px', borderBottom: '1px solid var(--border)' } }, [
+    el('h3', { style: { fontSize: '16px', fontWeight: '600' } }, 'Receipts'),
+    el('div', { style: { fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px' } },
+      'What each agent actually did, tool by tool. No claims \u2014 just the log.')
+  ]);
+  panel.appendChild(header);
+
+  var listWrap = el('div', { style: { overflow: 'auto', flex: '1' } });
+  panel.appendChild(listWrap);
+  listWrap.appendChild(el('div', { style: { padding: '20px', color: 'var(--text-tertiary)' } }, 'Loading...'));
+
+  WuphfAPI.getAgentLogs({ limit: 100 }).then(function(data) {
+    listWrap.textContent = '';
+    var tasks = (data && data.tasks) || [];
+    if (tasks.length === 0) {
+      listWrap.appendChild(el('div', { className: 'request-empty', style: { padding: '40px 20px' } },
+        'No receipts yet. Agents write one when they use a tool.'));
+      return;
+    }
+    var table = el('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '13px' } });
+    var thead = el('thead', {},
+      el('tr', { style: { textAlign: 'left', color: 'var(--text-tertiary)', fontSize: '11px', textTransform: 'uppercase' } }, [
+        el('th', { style: { padding: '8px 20px' } }, 'Task'),
+        el('th', { style: { padding: '8px 12px' } }, 'Agent'),
+        el('th', { style: { padding: '8px 12px', textAlign: 'right' } }, 'Tools'),
+        el('th', { style: { padding: '8px 12px' } }, 'Last'),
+        el('th', { style: { padding: '8px 12px' } }, '')
+      ]));
+    table.appendChild(thead);
+    var tbody = el('tbody');
+    tasks.forEach(function(t) {
+      var row = el('tr', {
+        style: { borderTop: '1px solid var(--border-light)', cursor: 'pointer' },
+        onclick: function() { renderReceiptDetail(panel, t.taskId); }
+      }, [
+        el('td', { style: { padding: '10px 20px', fontFamily: 'var(--font-mono)', fontSize: '12px' } }, t.taskId),
+        el('td', { style: { padding: '10px 12px' } }, t.agentSlug || '\u2014'),
+        el('td', { style: { padding: '10px 12px', textAlign: 'right' } }, String(t.toolCallCount || 0)),
+        el('td', { style: { padding: '10px 12px', color: 'var(--text-secondary)' } },
+          t.lastToolAt ? new Date(t.lastToolAt).toLocaleString() : '\u2014'),
+        el('td', { style: { padding: '10px 12px' } },
+          t.hasError ? el('span', { style: { color: 'var(--red)', fontSize: '11px' } }, 'error') : '')
+      ]);
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    listWrap.appendChild(table);
+  }).catch(function(err) {
+    listWrap.textContent = '';
+    listWrap.appendChild(el('div', { className: 'request-empty' },
+      'Could not load receipts: ' + (err && err.message ? err.message : err)));
+  });
+}
+
+function renderReceiptDetail(panel, taskId) {
+  panel.textContent = '';
+  var back = el('button', {
+    className: 'sidebar-btn',
+    style: { margin: '12px 20px 0', padding: '6px 10px', fontSize: '12px', border: '1px solid var(--border)', borderRadius: '6px', cursor: 'pointer', width: 'auto' },
+    onclick: function() { renderReceiptsApp(panel); }
+  }, '\u2190 Back to receipts');
+  panel.appendChild(back);
+
+  var header = el('div', { style: { padding: '12px 20px 8px' } }, [
+    el('h3', { style: { fontSize: '15px', fontWeight: '600', fontFamily: 'var(--font-mono)' } }, taskId),
+    el('div', { style: { fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px' } }, 'Tool-by-tool trace of this task.')
+  ]);
+  panel.appendChild(header);
+
+  var listWrap = el('div', { style: { overflow: 'auto', flex: '1', padding: '0 20px 20px' } });
+  panel.appendChild(listWrap);
+  listWrap.appendChild(el('div', { style: { padding: '16px 0', color: 'var(--text-tertiary)' } }, 'Loading...'));
+
+  WuphfAPI.getAgentLogs({ task: taskId }).then(function(data) {
+    listWrap.textContent = '';
+    var entries = (data && data.entries) || [];
+    if (entries.length === 0) {
+      listWrap.appendChild(el('div', { className: 'request-empty' }, 'No tool calls in this task yet.'));
+      return;
+    }
+    entries.forEach(function(entry, i) {
+      var when = entry.started_at ? new Date(entry.started_at).toLocaleTimeString() : '\u2014';
+      var paramsStr = entry.params ? JSON.stringify(entry.params) : '';
+      var item = el('div', {
+        style: {
+          padding: '10px 0',
+          borderBottom: '1px solid var(--border-light)',
+          fontSize: '13px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '4px'
+        }
+      }, [
+        el('div', { style: { display: 'flex', gap: '12px', alignItems: 'baseline' } }, [
+          el('span', { style: { color: 'var(--text-tertiary)', fontSize: '11px', minWidth: '64px' } }, '#' + (i + 1) + ' ' + when),
+          el('span', { style: { fontWeight: '600', fontFamily: 'var(--font-mono)' } }, entry.tool_name || '(unknown)'),
+          entry.error ? el('span', { style: { color: 'var(--red)', fontSize: '11px' } }, 'error') : null
+        ].filter(Boolean)),
+        paramsStr ? el('code', {
+          style: {
+            fontFamily: 'var(--font-mono)',
+            fontSize: '11px',
+            color: 'var(--text-secondary)',
+            padding: '4px 8px',
+            background: 'var(--bg-warm)',
+            borderRadius: '4px',
+            overflow: 'auto',
+            maxWidth: '100%'
+          }
+        }, paramsStr.length > 400 ? paramsStr.slice(0, 400) + '\u2026' : paramsStr) : null,
+        entry.error ? el('div', { style: { color: 'var(--red)', fontSize: '12px' } }, entry.error) : null
+      ].filter(Boolean));
+      listWrap.appendChild(item);
+    });
+  }).catch(function(err) {
+    listWrap.textContent = '';
+    listWrap.appendChild(el('div', { className: 'request-empty' },
+      'Could not load task: ' + (err && err.message ? err.message : err)));
   });
 }
 
