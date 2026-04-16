@@ -104,16 +104,6 @@ func (c *Client) SessionsCreate(ctx context.Context, agentID, label string) (str
 	return out.Key, nil
 }
 
-// SessionsEnd terminates the session with the given key on the gateway side,
-// freeing gateway resources. Callers should fire this when removing a bridged
-// agent from the WUPHF office so orphaned sessions don't accumulate. Failures
-// here are best-effort: the WUPHF-side member removal should proceed even if
-// the gateway is unreachable.
-func (c *Client) SessionsEnd(ctx context.Context, key string) error {
-	_, err := c.Call(ctx, "sessions.end", map[string]any{"key": key})
-	return err
-}
-
 func (c *Client) SessionsMessagesSubscribe(ctx context.Context, key string) error {
 	_, err := c.Call(ctx, "sessions.messages.subscribe", map[string]any{"key": key})
 	return err

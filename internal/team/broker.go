@@ -3930,14 +3930,11 @@ func (b *Broker) handleOfficeMembers(w http.ResponseWriter, r *http.Request) {
 
 				if fromOpenclaw && bridge != nil {
 					// Detach old session from subscriptions. Best-effort; log via
-					// the bridge's own system-message channel on failure.
+					// the bridge's own system-message channel on failure. The
+					// daemon-side session lingers (no sessions.end method); user
+					// can prune via the OpenClaw CLI if they care.
 					if err := bridge.DetachSlug(r.Context(), member.Slug); err != nil {
 						go bridge.postSystemMessage(fmt.Sprintf("agent %q provider-switch: detach warning: %v", member.Slug, err))
-					}
-					if oldBinding.Openclaw != nil && oldBinding.Openclaw.SessionKey != "" {
-						if err := bridge.EndSession(r.Context(), oldBinding.Openclaw.SessionKey); err != nil {
-							go bridge.postSystemMessage(fmt.Sprintf("agent %q provider-switch: old openclaw session may be leaked (%v)", member.Slug, err))
-						}
 					}
 				}
 
@@ -3967,20 +3964,16 @@ func (b *Broker) handleOfficeMembers(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "cannot remove built-in member", http.StatusBadRequest)
 				return
 			}
-			// If the member was bridged to OpenClaw, unsubscribe + end the
-			// gateway session. Best-effort: member removal must succeed even
-			// when the gateway is unreachable so users can always clean up
-			// their office. Failures post a system message so the user knows
-			// the old session may be leaked daemon-side.
+			// If the member was bridged to OpenClaw, unsubscribe from the
+			// gateway. Best-effort: member removal must succeed even when
+			// the gateway is unreachable. We do NOT call sessions.end because
+			// the current daemon doesn't expose that method — the session
+			// lingers daemon-side and the user can clean it up via the
+			// OpenClaw CLI if they want to reclaim the slot.
 			if member.Provider.Kind == provider.KindOpenclaw {
 				if bridge := b.openclawBridgeLocked(); bridge != nil {
 					if err := bridge.DetachSlug(r.Context(), member.Slug); err != nil {
 						go bridge.postSystemMessage(fmt.Sprintf("agent %q removed: detach warning: %v", member.Slug, err))
-					}
-					if member.Provider.Openclaw != nil && member.Provider.Openclaw.SessionKey != "" {
-						if err := bridge.EndSession(r.Context(), member.Provider.Openclaw.SessionKey); err != nil {
-							go bridge.postSystemMessage(fmt.Sprintf("agent %q removed: openclaw session may be leaked (%v) — run `openclaw sessions list` to verify", member.Slug, err))
-						}
 					}
 				}
 			}

@@ -3,6 +3,8 @@ package team
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/nex-crm/wuphf/internal/config"
 	"github.com/nex-crm/wuphf/internal/openclaw"
@@ -48,8 +50,7 @@ func StartOpenclawBridgeFromConfig(ctx context.Context, broker *Broker) (*Opencl
 		}
 	}
 
-	// Collect the current set of openclaw-bound members. If there are none,
-	// skip the bridge entirely — no dial, no goroutine, nothing.
+	// Collect the current set of openclaw-bound members to seed the bridge.
 	type bridgedSlug struct{ Slug, SessionKey string }
 	var bridged []bridgedSlug
 	for _, m := range broker.OfficeMembers() {
@@ -58,7 +59,16 @@ func StartOpenclawBridgeFromConfig(ctx context.Context, broker *Broker) (*Opencl
 		}
 		bridged = append(bridged, bridgedSlug{Slug: m.Slug, SessionKey: m.Provider.Openclaw.SessionKey})
 	}
-	if len(bridged) == 0 {
+
+	// Decide whether to start the bridge. We start it when EITHER there are
+	// already openclaw members (the classic case) OR the gateway is reachable
+	// via configured URL + token (so /office-members POST can live-hire a new
+	// openclaw agent without requiring a pre-existing one). Without this, the
+	// first openclaw hire on a fresh install would fail with "bridge not
+	// active," which is exactly the chicken-and-egg we want to avoid.
+	cfg, _ := config.Load()
+	gatewayConfigured := strings.TrimSpace(cfg.OpenclawGatewayURL) != "" || strings.TrimSpace(os.Getenv("WUPHF_OPENCLAW_GATEWAY_URL")) != "" || strings.TrimSpace(os.Getenv("NEX_OPENCLAW_GATEWAY_URL")) != ""
+	if len(bridged) == 0 && !gatewayConfigured {
 		return nil, nil
 	}
 

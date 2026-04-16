@@ -22,8 +22,6 @@ type fakeOCClient struct {
 	createNextKey  string // key returned by the next SessionsCreate call; auto-incremented if empty
 	createCounter  int
 	createErr      error
-	endedKeys      []string
-	endErr         error
 	events         chan openclaw.ClientEvent
 	sendErr        error
 	nextSendErrs   []error // drained FIFO if non-empty
@@ -84,16 +82,6 @@ func (f *fakeOCClient) SessionsCreate(ctx context.Context, agentID, label string
 	}
 	f.createCounter++
 	return "fake-session-key-" + strconvItoa(f.createCounter), nil
-}
-
-func (f *fakeOCClient) SessionsEnd(ctx context.Context, key string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.endErr != nil {
-		return f.endErr
-	}
-	f.endedKeys = append(f.endedKeys, key)
-	return nil
 }
 
 // strconvItoa is a file-local helper so we don't need to import strconv here.

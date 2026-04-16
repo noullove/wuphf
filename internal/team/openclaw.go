@@ -23,7 +23,6 @@ type openclawClient interface {
 	SessionsMessagesSubscribe(ctx context.Context, key string) error
 	SessionsMessagesUnsubscribe(ctx context.Context, key string) error
 	SessionsCreate(ctx context.Context, agentID, label string) (string, error)
-	SessionsEnd(ctx context.Context, key string) error
 	Events() <-chan openclaw.ClientEvent
 	Close() error
 }
@@ -147,20 +146,6 @@ func (b *OpenclawBridge) DetachSlug(ctx context.Context, slug string) error {
 		return fmt.Errorf("openclaw: unsubscribe %q: %w", slug, err)
 	}
 	return nil
-}
-
-// EndSession calls sessions.end on the gateway for the given key, freeing
-// daemon-side resources when a bridged member is removed. Best-effort: the
-// caller should succeed the member removal even if this fails.
-func (b *OpenclawBridge) EndSession(ctx context.Context, sessionKey string) error {
-	if b == nil {
-		return nil
-	}
-	client := b.getClient()
-	if client == nil {
-		return fmt.Errorf("openclaw: no active client")
-	}
-	return client.SessionsEnd(ctx, sessionKey)
 }
 
 // CreateSession calls sessions.create on the gateway and returns the new key.
