@@ -17,7 +17,7 @@ func TestTemplateLookup(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		cfg, ok := Templates[tc.slug]
+		cfg, ok := LookupLegacyTemplate(tc.slug)
 		if !ok {
 			t.Errorf("template %q not found", tc.slug)
 			continue
@@ -35,7 +35,7 @@ func TestTemplateLookup(t *testing.T) {
 }
 
 func TestTemplateCount(t *testing.T) {
-	if len(Templates) != 7 {
-		t.Errorf("expected 7 templates, got %d", len(Templates))
+	if got := len(LegacyTemplateNames()); got != 7 {
+		t.Errorf("expected 7 templates, got %d", got)
 	}
 }

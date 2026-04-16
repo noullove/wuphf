@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -100,6 +101,27 @@ func TestCreateCodexCLIStreamFnStreamsToolLifecycleAndTextDeltas(t *testing.T) {
 	}
 }
 
+func TestReadCodexJSONStreamParsesUsageFromTurnCompleted(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":33447,"cached_input_tokens":3456,"output_tokens":25}}`,
+	}, "\n")
+
+	result, err := ReadCodexJSONStream(bytes.NewBufferString(stream), nil)
+	if err != nil {
+		t.Fatalf("ReadCodexJSONStream: %v", err)
+	}
+	if got := result.Usage.InputTokens; got != 33447 {
+		t.Fatalf("expected input tokens 33447, got %d", got)
+	}
+	if got := result.Usage.CacheReadTokens; got != 3456 {
+		t.Fatalf("expected cached input tokens 3456, got %d", got)
+	}
+	if got := result.Usage.OutputTokens; got != 25 {
+		t.Fatalf("expected output tokens 25, got %d", got)
+	}
+}
+
 func readCodexHelperRecords(t *testing.T, path string) []codexHelperRecord {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -185,6 +207,7 @@ func TestCodexHelperProcess(t *testing.T) {
 	switch os.Getenv("CODEX_TEST_SCENARIO") {
 	case "success":
 		_, _ = os.Stdout.WriteString("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"codex final answer\"}}\n")
+		_, _ = os.Stdout.WriteString("{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":123,\"cached_input_tokens\":45,\"output_tokens\":6}}\n")
 		os.Exit(0)
 	case "structured-stream":
 		_, _ = os.Stdout.WriteString("{\"type\":\"response.output_item.added\",\"item\":{\"id\":\"tool-1\",\"type\":\"function_call\",\"name\":\"apply_patch\",\"arguments\":\"{\\\"path\\\":\\\"app.go\\\"}\"}}\n")
@@ -192,6 +215,7 @@ func TestCodexHelperProcess(t *testing.T) {
 		_, _ = os.Stdout.WriteString("{\"type\":\"response.output_text.delta\",\"delta\":\"Shipped \"}\n")
 		_, _ = os.Stdout.WriteString("{\"type\":\"response.output_text.delta\",\"delta\":\"the update.\"}\n")
 		_, _ = os.Stdout.WriteString("{\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Shipped the update.\"}]}}\n")
+		_, _ = os.Stdout.WriteString("{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":222,\"cached_input_tokens\":33,\"output_tokens\":7}}\n")
 		os.Exit(0)
 	case "login-required":
 		_, _ = os.Stdout.WriteString("{\"type\":\"turn.failed\",\"error\":{\"message\":\"authentication required\"}}\n")

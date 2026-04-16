@@ -519,30 +519,31 @@ func buildOneOnOneSlashCommands() []tui.SlashCommand {
 type channelPickerMode string
 
 const (
-	channelPickerNone            channelPickerMode = ""
-	channelPickerInitProvider    channelPickerMode = "init_provider"
-	channelPickerInitPack        channelPickerMode = "init_pack"
-	channelPickerProvider        channelPickerMode = "provider"
-	channelPickerIntegrations    channelPickerMode = "integrations"
-	channelPickerRequests        channelPickerMode = "requests"
-	channelPickerTasks           channelPickerMode = "tasks"
-	channelPickerTaskAction      channelPickerMode = "task_action"
-	channelPickerRequestAction   channelPickerMode = "request_action"
-	channelPickerThreads         channelPickerMode = "threads"
-	channelPickerThreadAction    channelPickerMode = "thread_action"
-	channelPickerChannels        channelPickerMode = "channels"
-	channelPickerSwitcher        channelPickerMode = "switcher"
-	channelPickerInsert          channelPickerMode = "insert"
-	channelPickerSearch          channelPickerMode = "search"
-	channelPickerRewind          channelPickerMode = "rewind"
-	channelPickerAgents          channelPickerMode = "agents"
-	channelPickerCalendarAgent   channelPickerMode = "calendar_agent"
-	channelPickerOneOnOneMode    channelPickerMode = "one_on_one_mode"
-	channelPickerOneOnOneAgent   channelPickerMode = "one_on_one_agent"
-	channelPickerTelegramGroup   channelPickerMode = "telegram_group"
-	channelPickerConnect         channelPickerMode = "connect"
-	channelPickerTelegramToken   channelPickerMode = "telegram_token"
-	channelPickerTelegramChatID  channelPickerMode = "telegram_chat_id"
+	channelPickerNone           channelPickerMode = ""
+	channelPickerInitProvider   channelPickerMode = "init_provider"
+	channelPickerInitBlueprint  channelPickerMode = "init_blueprint"
+	channelPickerInitPack       channelPickerMode = "init_pack" // legacy alias
+	channelPickerProvider       channelPickerMode = "provider"
+	channelPickerIntegrations   channelPickerMode = "integrations"
+	channelPickerRequests       channelPickerMode = "requests"
+	channelPickerTasks          channelPickerMode = "tasks"
+	channelPickerTaskAction     channelPickerMode = "task_action"
+	channelPickerRequestAction  channelPickerMode = "request_action"
+	channelPickerThreads        channelPickerMode = "threads"
+	channelPickerThreadAction   channelPickerMode = "thread_action"
+	channelPickerChannels       channelPickerMode = "channels"
+	channelPickerSwitcher       channelPickerMode = "switcher"
+	channelPickerInsert         channelPickerMode = "insert"
+	channelPickerSearch         channelPickerMode = "search"
+	channelPickerRewind         channelPickerMode = "rewind"
+	channelPickerAgents         channelPickerMode = "agents"
+	channelPickerCalendarAgent  channelPickerMode = "calendar_agent"
+	channelPickerOneOnOneMode   channelPickerMode = "one_on_one_mode"
+	channelPickerOneOnOneAgent  channelPickerMode = "one_on_one_agent"
+	channelPickerTelegramGroup  channelPickerMode = "telegram_group"
+	channelPickerConnect        channelPickerMode = "connect"
+	channelPickerTelegramToken  channelPickerMode = "telegram_token"
+	channelPickerTelegramChatID channelPickerMode = "telegram_chat_id"
 	channelPickerOpenclawURL     channelPickerMode = "openclaw-url"
 	channelPickerOpenclawToken   channelPickerMode = "openclaw-token"
 	channelPickerOpenclawSession channelPickerMode = "openclaw-session"
@@ -2284,10 +2285,10 @@ func (m channelModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.picker = tui.NewPicker("Choose LLM Provider", tui.ProviderOptions())
 			m.picker.SetActive(true)
 			m.pickerMode = channelPickerInitProvider
-		case tui.InitPackChoice:
-			m.picker = tui.NewPicker("Choose Agent Pack", tui.PackOptions())
+		case tui.InitBlueprintChoice, tui.InitPackChoice:
+			m.picker = tui.NewPicker("Choose Operation Template", tui.BlueprintOptions())
 			m.picker.SetActive(true)
-			m.pickerMode = channelPickerInitPack
+			m.pickerMode = channelPickerInitBlueprint
 		case tui.InitDone:
 			m.posting = true
 			return m, tea.Batch(cmd, applyTeamSetup())
@@ -5769,7 +5770,7 @@ func killTeamSession() {
 	// Kill tmux session (kills all agent processes in all panes/windows)
 	exec.Command("tmux", "-L", "wuphf", "kill-session", "-t", "wuphf-team").Run()
 	// Stop the broker
-	http.Get("http://127.0.0.1:7890/health") // just to check; broker stops with the process
+	http.Get(brokerURL("/health")) // just to check; broker stops with the process
 }
 
 func resolveInitialOfficeApp(name string) officeApp {
@@ -5794,9 +5795,9 @@ func runChannelView(threadsCollapsed bool, initialApp officeApp, skipSplash bool
 
 	// Check if onboarding is needed before launching the channel view.
 	if os.Getenv("WUPHF_SKIP_ONBOARDING") == "" {
-		state, err := fetchOnboardingState(brokerBaseURL)
+		state, err := fetchOnboardingState(brokerBaseURL())
 		if err == nil && !state.Onboarded {
-			om := newOnboardingModel(brokerBaseURL, 0, 0)
+			om := newOnboardingModel(brokerBaseURL(), 0, 0)
 			op := tea.NewProgram(om, tea.WithAltScreen())
 			if _, err := op.Run(); err != nil {
 				reportChannelCrash(fmt.Sprintf("onboarding error: %v\n", err))

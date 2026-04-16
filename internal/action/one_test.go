@@ -19,10 +19,11 @@ if [ "$1" = "--agent" ]; then
   shift
 fi
 
+cmd1="$1"
 cmd2="$1 $2"
 cmd3="$1 $2 $3"
 
-if [ "$cmd2" = "connection list" ]; then
+if [ "$cmd1" = "list" ]; then
   echo '{"total":1,"showing":1,"connections":[{"platform":"gmail","state":"operational","key":"live::gmail::default::abc123"}]}'
 elif [ "$cmd3" = "actions search gmail" ]; then
   echo '{"actions":[{"actionId":"act-send","title":"Send Email","method":"POST","path":"/gmail/send"}]}'
@@ -30,11 +31,11 @@ elif [ "$cmd3" = "actions knowledge gmail" ]; then
   echo '{"knowledge":"Needs to, subject, body","method":"POST"}'
 elif [ "$cmd3" = "actions execute gmail" ]; then
   echo '{"dryRun":true,"request":{"method":"POST","url":"https://api.withone.ai/send","headers":{"x-test":"1"},"data":{"to":"a@example.com"}}}'
-elif [ "$cmd3" = "flow create welcome-flow" ]; then
-  echo '{"created":true,"key":"welcome-flow","path":"/tmp/.one/flows/welcome-flow.flow.json"}'
-elif [ "$cmd3" = "flow execute welcome-flow" ]; then
-  echo '{"event":"step:start","stepId":"step-1"}'
-  echo '{"event":"workflow:result","runId":"run-1","logFile":"/tmp/run.log","status":"success","steps":{"step-1":{"status":"success"}}}'
+elif [ "$cmd2" = "flow create" ]; then
+  echo '{"created":true,"key":"'"$3"'","path":"/tmp/.one/flows/'"$3"'/flow.json"}'
+elif [ "$cmd2" = "flow execute" ]; then
+  echo '{"event":"step:start","stepId":"execute"}'
+  echo '{"event":"workflow:result","runId":"run-1","logFile":"/tmp/run.log","status":"success","steps":{"execute":{"status":"success","response":{"ok":true,"posted":true,"channel":"#ops"}}}}'
 elif [ "$cmd3" = "relay event-types gmail" ]; then
   echo '{"platform":"gmail","eventTypes":["message.received"]}'
 elif [ "$cmd2" = "relay create" ]; then
@@ -216,7 +217,7 @@ if [ "$1" != "-y" ] || [ "$2" != "@withone/cli" ] || [ "$3" != "--agent" ]; then
   exit 1
 fi
 shift 3
-if [ "$1 $2" = "connection list" ]; then
+if [ "$1" = "list" ]; then
   echo '{"total":1,"showing":1,"connections":[{"platform":"gmail","state":"operational","key":"live::gmail::default::abc123"}]}'
   exit 0
 fi
@@ -242,5 +243,120 @@ exit 1
 	}
 	if got := len(result.Connections); got != 1 {
 		t.Fatalf("expected 1 connection, got %d", got)
+	}
+}
+
+func TestOneCLIListConnectionsUsesSafeActionWorkDir(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	workDir := t.TempDir()
+	traceFile := filepath.Join(t.TempDir(), "pwd.txt")
+	oneBin := filepath.Join(t.TempDir(), "one")
+	script := `#!/bin/sh
+if [ "$1" = "--agent" ]; then
+  shift
+fi
+pwd > "` + traceFile + `"
+if [ "$1" = "list" ]; then
+  echo '{"total":1,"showing":1,"connections":[{"platform":"notion","state":"operational","key":"live::notion::default::abc123"}]}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+`
+	if err := os.WriteFile(oneBin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	client := &OneCLI{Bin: oneBin, WorkDir: workDir}
+
+	result, err := client.ListConnections(context.Background(), ListConnectionsOptions{})
+	if err != nil {
+		t.Fatalf("ListConnections returned error: %v", err)
+	}
+	if len(result.Connections) != 1 {
+		t.Fatalf("expected 1 connection, got %d", len(result.Connections))
+	}
+
+	usedDirRaw, err := os.ReadFile(traceFile)
+	if err != nil {
+		t.Fatalf("read trace file: %v", err)
+	}
+	usedDir := strings.TrimSpace(string(usedDirRaw))
+	expectedDir, err := filepath.EvalSymlinks(homeDir)
+	if err != nil {
+		t.Fatalf("resolve home dir: %v", err)
+	}
+	if usedDir != expectedDir {
+		t.Fatalf("expected ListConnections to run from home dir %q, got %q", expectedDir, usedDir)
+	}
+}
+
+func TestOneCLIExecuteWorkflowKeepsFlowWorkDir(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	workDir := t.TempDir()
+	traceFile := filepath.Join(t.TempDir(), "workflow-pwd.txt")
+	oneBin := filepath.Join(t.TempDir(), "one")
+	script := `#!/bin/sh
+if [ "$1" = "--agent" ]; then
+  shift
+fi
+pwd > "` + traceFile + `"
+if [ "$1 $2 $3" = "flow execute welcome-flow" ]; then
+  echo '{"event":"workflow:result","runId":"run-1","logFile":"/tmp/run.log","status":"success","steps":{"step-1":{"status":"success"}}}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+`
+	if err := os.WriteFile(oneBin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	client := &OneCLI{Bin: oneBin, WorkDir: workDir}
+
+	workflow, err := client.ExecuteWorkflow(context.Background(), WorkflowExecuteRequest{KeyOrPath: "welcome-flow"})
+	if err != nil {
+		t.Fatalf("ExecuteWorkflow returned error: %v", err)
+	}
+	if workflow.RunID != "run-1" || workflow.Status != "success" {
+		t.Fatalf("unexpected workflow result %+v", workflow)
+	}
+
+	usedDirRaw, err := os.ReadFile(traceFile)
+	if err != nil {
+		t.Fatalf("read trace file: %v", err)
+	}
+	usedDir := strings.TrimSpace(string(usedDirRaw))
+	expectedDir, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		t.Fatalf("resolve workdir: %v", err)
+	}
+	if usedDir != expectedDir {
+		t.Fatalf("expected ExecuteWorkflow to run from flow workdir %q, got %q", expectedDir, usedDir)
+	}
+}
+
+func TestOneCLIExecuteActionAutoResolvesConnectionViaTempFlow(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	oneBin := writeFakeOne(t)
+	client := &OneCLI{Bin: oneBin, WorkDir: t.TempDir()}
+
+	result, err := client.ExecuteAction(context.Background(), ExecuteRequest{
+		Platform: "slack",
+		ActionID: "post-message",
+		Data: map[string]any{
+			"channel": "#ops",
+			"text":    "hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteAction returned error: %v", err)
+	}
+	if result.DryRun {
+		t.Fatalf("expected live temp-flow execution result, got dry-run %+v", result)
+	}
+	if !strings.Contains(string(result.Response), `"posted":true`) {
+		t.Fatalf("expected flow response payload, got %s", string(result.Response))
 	}
 }

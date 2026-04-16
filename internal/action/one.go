@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nex-crm/wuphf/internal/config"
 )
@@ -108,7 +109,7 @@ func (o *OneCLI) Guide(ctx context.Context, topic string) (GuideResult, error) {
 }
 
 func (o *OneCLI) ListConnections(ctx context.Context, opts ListConnectionsOptions) (ConnectionsResult, error) {
-	args := []string{"connection", "list"}
+	args := []string{"list"}
 	if opts.Search != "" {
 		args = append(args, "--search", opts.Search)
 	}
@@ -167,6 +168,9 @@ func (o *OneCLI) ActionKnowledge(ctx context.Context, platform, actionID string)
 }
 
 func (o *OneCLI) ExecuteAction(ctx context.Context, req ExecuteRequest) (ExecuteResult, error) {
+	if strings.TrimSpace(req.ConnectionKey) == "" && !req.FormData && !req.FormURLEncoded {
+		return o.executeActionViaFlow(ctx, req)
+	}
 	args := []string{
 		"actions", "execute",
 		strings.TrimSpace(req.Platform),
@@ -219,6 +223,112 @@ func (o *OneCLI) ExecuteAction(ctx context.Context, req ExecuteRequest) (Execute
 	}, nil
 }
 
+func (o *OneCLI) executeActionViaFlow(ctx context.Context, req ExecuteRequest) (ExecuteResult, error) {
+	tempRoot, err := os.MkdirTemp("", "wuphf-one-action-flow-")
+	if err != nil {
+		return ExecuteResult{}, fmt.Errorf("create temp flow dir: %w", err)
+	}
+	defer os.RemoveAll(tempRoot)
+
+	flowKey := fmt.Sprintf("wuphf-auto-action-%d", time.Now().UTC().UnixNano())
+	flowDir := filepath.Join(tempRoot, ".one", "flows", flowKey)
+	if err := os.MkdirAll(flowDir, 0o700); err != nil {
+		return ExecuteResult{}, fmt.Errorf("create temp flow layout: %w", err)
+	}
+
+	definition, err := json.MarshalIndent(buildOneActionFlowDefinition(req), "", "  ")
+	if err != nil {
+		return ExecuteResult{}, fmt.Errorf("marshal temp flow definition: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(flowDir, "flow.json"), definition, 0o600); err != nil {
+		return ExecuteResult{}, fmt.Errorf("write temp flow definition: %w", err)
+	}
+
+	flowCLI := *o
+	flowCLI.WorkDir = tempRoot
+	workflow, err := flowCLI.ExecuteWorkflow(ctx, WorkflowExecuteRequest{
+		KeyOrPath:      flowKey,
+		DryRun:         req.DryRun,
+		SkipValidation: true,
+	})
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+	executed, ok := workflow.Steps["execute"]
+	if !ok {
+		return ExecuteResult{
+			DryRun: req.DryRun,
+			Response: mustMarshalJSON(map[string]any{
+				"workflow_run_id": workflow.RunID,
+				"workflow_status": workflow.Status,
+				"events":          workflow.Events,
+			}),
+		}, nil
+	}
+	var step struct {
+		Response json.RawMessage `json:"response"`
+		Output   json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(executed, &step); err != nil {
+		return ExecuteResult{
+			DryRun:   req.DryRun,
+			Response: executed,
+		}, nil
+	}
+	response := step.Response
+	if len(response) == 0 {
+		response = step.Output
+	}
+	return ExecuteResult{
+		DryRun:   req.DryRun,
+		Response: response,
+	}, nil
+}
+
+func buildOneActionFlowDefinition(req ExecuteRequest) map[string]any {
+	actionStep := map[string]any{
+		"platform":      strings.TrimSpace(req.Platform),
+		"actionId":      strings.TrimSpace(req.ActionID),
+		"connectionKey": "$.input.connectionKey",
+	}
+	if len(req.Data) > 0 {
+		actionStep["data"] = req.Data
+	}
+	if len(req.PathVariables) > 0 {
+		actionStep["pathVars"] = req.PathVariables
+	}
+	if len(req.QueryParameters) > 0 {
+		actionStep["queryParams"] = req.QueryParameters
+	}
+	if len(req.Headers) > 0 {
+		actionStep["headers"] = req.Headers
+	}
+	return map[string]any{
+		"key":         "wuphf-auto-action",
+		"name":        "WUPHF Auto Action",
+		"description": "Temporary one-step flow for auto-resolving a single provider connection.",
+		"version":     "1",
+		"inputs": map[string]any{
+			"connectionKey": map[string]any{
+				"type":        "string",
+				"required":    true,
+				"description": "Auto-resolved connection key",
+				"connection": map[string]any{
+					"platform": strings.TrimSpace(req.Platform),
+				},
+			},
+		},
+		"steps": []map[string]any{
+			{
+				"id":   "execute",
+				"name": "Execute external action",
+				"type": "action",
+				"action": actionStep,
+			},
+		},
+	}
+}
+
 func (o *OneCLI) CreateWorkflow(ctx context.Context, req WorkflowCreateRequest) (WorkflowCreateResult, error) {
 	args := []string{"flow", "create", strings.TrimSpace(req.Key), "--definition", string(req.Definition)}
 	var result WorkflowCreateResult
@@ -241,6 +351,9 @@ func (o *OneCLI) ExecuteWorkflow(ctx context.Context, req WorkflowExecuteRequest
 	}
 	if req.Mock {
 		args = append(args, "--mock")
+	}
+	if req.SkipValidation {
+		args = append(args, "--skip-validation")
 	}
 	if req.AllowBash {
 		args = append(args, "--allow-bash")
@@ -508,13 +621,14 @@ func (o *OneCLI) run(ctx context.Context, args []string) ([]byte, error) {
 	if err := o.ensureConfigured(); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(o.WorkDir, 0o700); err != nil {
+	workDir := o.commandWorkDir(args)
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return nil, err
 	}
 	cmdArgs := append(append([]string{}, o.ArgsPrefix...), "--agent")
 	cmdArgs = append(cmdArgs, args...)
 	cmd := exec.CommandContext(ctx, o.Bin, cmdArgs...)
-	cmd.Dir = o.WorkDir
+	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), o.Env...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -534,6 +648,31 @@ func (o *OneCLI) run(ctx context.Context, args []string) ([]byte, error) {
 		return nil, fmt.Errorf("one CLI failed: %s", msg)
 	}
 	return bytes.TrimSpace(stdout.Bytes()), nil
+}
+
+func (o *OneCLI) commandWorkDir(args []string) string {
+	if oneCLIUsesFlowWorkspace(args) {
+		if dir := strings.TrimSpace(o.WorkDir); dir != "" {
+			return dir
+		}
+	}
+	if dir := strings.TrimSpace(os.Getenv("WUPHF_ONE_ACTION_WORKDIR")); dir != "" {
+		return dir
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return home
+	}
+	if dir := strings.TrimSpace(o.WorkDir); dir != "" {
+		return dir
+	}
+	return "."
+}
+
+func oneCLIUsesFlowWorkspace(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(args[0]), "flow")
 }
 
 func (o *OneCLI) ensureConfigured() error {

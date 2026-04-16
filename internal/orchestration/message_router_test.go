@@ -12,11 +12,9 @@ func TestMessageRouter_ExtractSkills(t *testing.T) {
 		msg     string
 		wantAny []string
 	}{
-		{"Can you research our competitors?", []string{"market-research", "competitive-analysis"}},
-		{"Find me new leads and outreach targets", []string{"prospecting", "outreach"}},
-		{"Fix the bug in the code", []string{"general", "planning"}},
-		{"Help with SEO and keyword ranking", []string{"seo", "content-analysis"}},
-		{"Build a landing page and backend API with a positioning brief", []string{"frontend", "backend", "positioning"}},
+		{"Build a workflow automation blueprint for customer onboarding", []string{"workflow automation", "customer onboarding"}},
+		{"Create a go-to-market handoff for the new offer", []string{"go market", "market handoff"}},
+		{"Draft an account reconciliation and billing operations plan", []string{"account reconciliation", "billing operations"}},
 		{"Hello", nil},
 	}
 
@@ -38,6 +36,37 @@ func TestMessageRouter_ExtractSkills(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("msg %q: expected one of %v in skills %v", tt.msg, tt.wantAny, skills)
+		}
+	}
+}
+
+func TestRoutingTermsAndScoreMessageAgainstTermsMatchAgentScoring(t *testing.T) {
+	message := "Need a go to market customer handoff and billing operations plan."
+	expertise := []string{"customer success", "invoicing"}
+	roleTerms := []string{"customer handoff", "billing operations"}
+
+	got := ScoreMessageAgainstTerms(message, RoutingTerms("ops-planner", expertise, roleTerms, nil))
+	want := ScoreMessageAgainstAgent(message, "ops-planner", expertise, roleTerms)
+	if got != want {
+		t.Fatalf("expected shared term scoring %v to equal agent scoring %v", got, want)
+	}
+}
+
+func TestRoutingTermsNormalizeExtraTerms(t *testing.T) {
+	terms := RoutingTerms("bookkeeper", nil, nil, []string{"Billing Operations", "Accounts Receivable"})
+	want := map[string]bool{
+		"bookkeeper":          false,
+		"billing operations":  false,
+		"accounts receivable": false,
+	}
+	for _, term := range terms {
+		if _, ok := want[term]; ok {
+			want[term] = true
+		}
+	}
+	for term, seen := range want {
+		if !seen {
+			t.Fatalf("expected term %q in %v", term, terms)
 		}
 	}
 }
@@ -69,16 +98,46 @@ func TestRouteSuggestsCollaboratorsForProductLaunchWork(t *testing.T) {
 	mr.SetTeamLeadSlug("ceo")
 	agents := []AgentInfo{
 		{Slug: "ceo", Expertise: []string{"strategy", "delegation"}},
-		{Slug: "fe", Expertise: []string{"frontend", "React", "CSS", "UI-UX", "components"}},
-		{Slug: "be", Expertise: []string{"backend", "APIs", "databases"}},
-		{Slug: "cmo", Expertise: []string{"positioning", "messaging", "go-to-market"}},
+		{Slug: "growth-ops", Expertise: []string{"pipeline optimization", "customer onboarding"}, RoleTerms: []string{"go-to-market", "growth operations"}},
+		{Slug: "automation-builder", Expertise: []string{"workflow automation", "integrations"}, RoleTerms: []string{"automation", "workflow orchestration"}},
+		{Slug: "bookkeeper", Expertise: []string{"invoicing", "billing"}, RoleTerms: []string{"accounts receivable", "reconciliation"}},
 	}
 
-	result := mr.Route("Build a landing page, backend API, and positioning brief for Nex.", agents)
+	result := mr.Route("Set up a go to market workflow that automates customer onboarding and workflow orchestration.", agents)
 	if result.Primary != "ceo" {
 		t.Fatalf("expected primary='ceo', got %q", result.Primary)
 	}
-	want := map[string]bool{"fe": false, "be": false, "cmo": false}
+	want := map[string]bool{"growth-ops": false, "automation-builder": false}
+	for _, slug := range result.Collaborators {
+		if _, ok := want[slug]; ok {
+			want[slug] = true
+		}
+	}
+	for slug, found := range want {
+		if !found {
+			t.Fatalf("expected collaborator %q in %v", slug, result.Collaborators)
+		}
+	}
+}
+
+func TestRouteUsesRoleTermsAndExpertiseMetadata(t *testing.T) {
+	mr := NewMessageRouter()
+	mr.SetTeamLeadSlug("ceo")
+	agents := []AgentInfo{
+		{Slug: "ceo", Expertise: []string{"strategy", "delegation"}},
+		{Slug: "ops-planner", Expertise: []string{"customer success", "invoicing"}, RoleTerms: []string{"customer handoff", "billing operations"}},
+		{Slug: "rev-ops", Expertise: []string{"pipeline management"}, RoleTerms: []string{"go-to-market", "lead routing"}},
+		{Slug: "support", Expertise: []string{"ticket triage"}, RoleTerms: []string{"customer support"}},
+	}
+
+	result := mr.Route("Need a go to market customer handoff and billing operations plan.", agents)
+	if result.Primary != "ceo" {
+		t.Fatalf("expected primary='ceo', got %q", result.Primary)
+	}
+	if len(result.Collaborators) == 0 {
+		t.Fatal("expected collaborators from role/expertise metadata")
+	}
+	want := map[string]bool{"ops-planner": false, "rev-ops": false}
 	for _, slug := range result.Collaborators {
 		if _, ok := want[slug]; ok {
 			want[slug] = true

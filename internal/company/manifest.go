@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nex-crm/wuphf/internal/agent"
 	"github.com/nex-crm/wuphf/internal/config"
 	"github.com/nex-crm/wuphf/internal/provider"
 )
@@ -33,6 +32,12 @@ type ChannelSurfaceSpec struct {
 	BotTokenEnv string `json:"bot_token_env,omitempty"`
 }
 
+type BlueprintRef struct {
+	Kind   string `json:"kind,omitempty"`
+	ID     string `json:"id,omitempty"`
+	Source string `json:"source,omitempty"`
+}
+
 type ChannelSpec struct {
 	Slug        string              `json:"slug"`
 	Name        string              `json:"name,omitempty"`
@@ -43,12 +48,40 @@ type ChannelSpec struct {
 }
 
 type Manifest struct {
-	Name        string        `json:"name,omitempty"`
-	Description string        `json:"description,omitempty"`
-	Lead        string        `json:"lead,omitempty"`
-	Members     []MemberSpec  `json:"members,omitempty"`
-	Channels    []ChannelSpec `json:"channels,omitempty"`
-	UpdatedAt   string        `json:"updated_at,omitempty"`
+	Name          string         `json:"name,omitempty"`
+	Description   string         `json:"description,omitempty"`
+	Lead          string         `json:"lead,omitempty"`
+	Members       []MemberSpec   `json:"members,omitempty"`
+	Channels      []ChannelSpec  `json:"channels,omitempty"`
+	BlueprintRefs []BlueprintRef `json:"blueprint_refs,omitempty"`
+	UpdatedAt     string         `json:"updated_at,omitempty"`
+}
+
+func (m Manifest) ActiveBlueprintRefs() []BlueprintRef {
+	return normalizeBlueprintRefs(m.BlueprintRefs)
+}
+
+func (m Manifest) PrimaryBlueprintRef() (BlueprintRef, bool) {
+	refs := m.ActiveBlueprintRefs()
+	if len(refs) == 0 {
+		return BlueprintRef{}, false
+	}
+	return refs[0], true
+}
+
+func (m Manifest) BlueprintRefsByKind(kind string) []BlueprintRef {
+	kind = normalizeBlueprintKind(kind)
+	refs := m.ActiveBlueprintRefs()
+	if kind == "" {
+		return refs
+	}
+	out := make([]BlueprintRef, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Kind == kind {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 func ManifestPath() string {
@@ -59,15 +92,17 @@ func ManifestPath() string {
 		return path
 	}
 
-	if cwd, err := os.Getwd(); err == nil {
-		local := filepath.Join(cwd, "wuphf.company.json")
-		if _, err := os.Stat(local); err == nil {
-			return local
+	if strings.TrimSpace(os.Getenv("WUPHF_RUNTIME_HOME")) == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			local := filepath.Join(cwd, "wuphf.company.json")
+			if _, err := os.Stat(local); err == nil {
+				return local
+			}
 		}
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := config.RuntimeHomeDir()
+	if home == "" {
 		return filepath.Join(".wuphf", "company.json")
 	}
 	return filepath.Join(home, ".wuphf", "company.json")
@@ -101,9 +136,20 @@ func backfillFromConfig(manifest Manifest) Manifest {
 			manifest.Name = name
 		}
 	}
-	if strings.TrimSpace(manifest.Description) == "" || manifest.Description == "Autonomous office runtime for the founding team." {
+	if strings.TrimSpace(manifest.Description) == "" || strings.Contains(strings.ToLower(manifest.Description), "founding team") {
 		if desc := strings.TrimSpace(cfg.CompanyDescription); desc != "" {
 			manifest.Description = desc
+		} else {
+			manifest.Description = "Autonomous office runtime."
+		}
+	}
+	if len(normalizeBlueprintRefs(manifest.BlueprintRefs)) == 0 {
+		if blueprint := strings.TrimSpace(cfg.ActiveBlueprint()); blueprint != "" {
+			manifest.BlueprintRefs = []BlueprintRef{{
+				Kind:   "operation",
+				ID:     normalizeSlug(blueprint),
+				Source: "config",
+			}}
 		}
 	}
 	return manifest
@@ -126,37 +172,33 @@ func SaveManifest(manifest Manifest) error {
 
 func DefaultManifest() Manifest {
 	now := time.Now().UTC().Format(time.RFC3339)
-	pack := agent.GetPack("founding-team")
+	cfg, _ := config.Load()
+	if launchFromScratchRequested() {
+		return normalizeManifest(fromScratchDefaultManifest(now))
+	}
+	blueprintID := normalizeSlug(cfg.ActiveBlueprint())
 	manifest := Manifest{
 		Name:        "The WUPHF Office",
-		Description: "Autonomous office runtime for the founding team.",
+		Description: "Autonomous office runtime.",
 		Lead:        "ceo",
 		UpdatedAt:   now,
 	}
-	if pack == nil {
-		manifest.Members = []MemberSpec{
-			{Slug: "ceo", Name: "CEO", Role: "CEO", System: true},
-			{Slug: "pm", Name: "Product Manager", Role: "Product Manager"},
-			{Slug: "fe", Name: "Frontend Engineer", Role: "Frontend Engineer"},
-			{Slug: "be", Name: "Backend Engineer", Role: "Backend Engineer"},
-			{Slug: "ai", Name: "AI Engineer", Role: "AI Engineer"},
-			{Slug: "designer", Name: "Designer", Role: "Designer"},
-			{Slug: "cmo", Name: "CMO", Role: "CMO"},
-			{Slug: "cro", Name: "CRO", Role: "CRO"},
+	if blueprintID != "" {
+		manifest.BlueprintRefs = []BlueprintRef{{
+			Kind:   "operation",
+			ID:     blueprintID,
+			Source: "config",
+		}}
+		if resolved, ok := MaterializeManifest(manifest, repoRootFromCWD()); ok {
+			resolved.UpdatedAt = now
+			return normalizeManifest(resolved)
 		}
-	} else {
-		for _, cfg := range pack.Agents {
-			manifest.Members = append(manifest.Members, MemberSpec{
-				Slug:           cfg.Slug,
-				Name:           cfg.Name,
-				Role:           cfg.Name,
-				Expertise:      append([]string(nil), cfg.Expertise...),
-				Personality:    cfg.Personality,
-				PermissionMode: cfg.PermissionMode,
-				AllowedTools:   append([]string(nil), cfg.AllowedTools...),
-				System:         cfg.Slug == "ceo",
-			})
-		}
+	}
+	manifest.Members = []MemberSpec{
+		{Slug: "ceo", Name: "CEO", Role: "CEO", System: true},
+		{Slug: "planner", Name: "Planner", Role: "Planner"},
+		{Slug: "executor", Name: "Executor", Role: "Executor"},
+		{Slug: "reviewer", Name: "Reviewer", Role: "Reviewer"},
 	}
 	generalMembers := make([]string, 0, len(manifest.Members))
 	for _, member := range manifest.Members {
@@ -171,6 +213,41 @@ func DefaultManifest() Manifest {
 	return normalizeManifest(manifest)
 }
 
+func launchFromScratchRequested() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WUPHF_START_FROM_SCRATCH"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func fromScratchDefaultManifest(now string) Manifest {
+	members := []MemberSpec{
+		{Slug: "founder", Name: "Founder", Role: "Founder", System: true},
+		{Slug: "operator", Name: "Operator", Role: "Operator", System: true},
+		{Slug: "builder", Name: "Builder", Role: "Builder"},
+		{Slug: "reviewer", Name: "Reviewer", Role: "Reviewer"},
+	}
+	channelMembers := make([]string, 0, len(members))
+	for _, member := range members {
+		channelMembers = append(channelMembers, member.Slug)
+	}
+	return Manifest{
+		Name:        "WUPHF Office",
+		Description: "Autonomous office runtime that starts from a directive instead of a saved blueprint.",
+		Lead:        "founder",
+		Members:     members,
+		Channels: []ChannelSpec{{
+			Slug:        "general",
+			Name:        "general",
+			Description: "Primary room for inventing and operating the business from scratch.",
+			Members:     channelMembers,
+		}},
+		UpdatedAt: now,
+	}
+}
+
 func normalizeManifest(manifest Manifest) Manifest {
 	if strings.TrimSpace(manifest.Name) == "" {
 		manifest.Name = "The WUPHF Office"
@@ -178,6 +255,7 @@ func normalizeManifest(manifest Manifest) Manifest {
 	if strings.TrimSpace(manifest.Lead) == "" {
 		manifest.Lead = "ceo"
 	}
+	manifest.BlueprintRefs = normalizeBlueprintRefs(manifest.BlueprintRefs)
 
 	seenMembers := make(map[string]struct{}, len(manifest.Members))
 	members := make([]MemberSpec, 0, len(manifest.Members))
@@ -204,6 +282,9 @@ func normalizeManifest(manifest Manifest) Manifest {
 		members = append(members, member)
 	}
 	if len(members) == 0 {
+		if resolved, ok := MaterializeManifest(manifest, repoRootFromCWD()); ok {
+			return resolved
+		}
 		return DefaultManifest()
 	}
 	manifest.Members = members
@@ -247,6 +328,40 @@ func normalizeManifest(manifest Manifest) Manifest {
 	}
 	manifest.Channels = channels
 	return manifest
+}
+
+func normalizeBlueprintRefs(refs []BlueprintRef) []BlueprintRef {
+	seen := make(map[string]struct{}, len(refs))
+	out := make([]BlueprintRef, 0, len(refs))
+	for _, ref := range refs {
+		ref.Kind = normalizeBlueprintKind(ref.Kind)
+		ref.ID = normalizeSlug(ref.ID)
+		ref.Source = strings.ToLower(strings.TrimSpace(ref.Source))
+		if ref.Source == "" {
+			ref.Source = "manifest"
+		}
+		if ref.ID == "" {
+			continue
+		}
+		key := ref.Kind + "|" + ref.ID + "|" + ref.Source
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, ref)
+	}
+	return out
+}
+
+func normalizeBlueprintKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", "operation", "business", "template":
+		return "operation"
+	case "employee", "role":
+		return "employee"
+	default:
+		return normalizeSlug(kind)
+	}
 }
 
 func containsChannel(channels []ChannelSpec, slug string) bool {

@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ var atMentionPattern = regexp.MustCompile(`@(\S+)`)
 type AgentInfo struct {
 	Slug      string
 	Expertise []string
+	RoleTerms []string
 }
 
 // MessageRoutingResult is the output of a Route call.
@@ -99,15 +101,6 @@ func (m *MessageRouter) Route(message string, availableAgents []AgentInfo) Messa
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Register all available agents so the task router can score them.
-	for _, a := range availableAgents {
-		skills := make([]SkillDeclaration, len(a.Expertise))
-		for i, e := range a.Expertise {
-			skills[i] = SkillDeclaration{Name: e, Description: e, Proficiency: 1.0}
-		}
-		m.router.RegisterAgent(a.Slug, skills)
-	}
-
 	result := MessageRoutingResult{}
 
 	teamLead := m.getTeamLeadSlug()
@@ -132,20 +125,7 @@ func (m *MessageRouter) Route(message string, availableAgents []AgentInfo) Messa
 	result.Primary = teamLead
 	result.TeamLeadAware = true
 
-	skills := m.ExtractSkills(message)
-	if len(skills) > 0 {
-		task := TaskDefinition{
-			ID:             "msg-route",
-			RequiredSkills: skills,
-		}
-		capable := m.router.FindCapableAgents(task)
-		for _, rr := range capable {
-			if rr.AgentSlug != teamLead && rr.Score >= 0.25 {
-				result.Collaborators = append(result.Collaborators, rr.AgentSlug)
-			}
-		}
-	}
-
+	result.Collaborators = m.inferCollaborators(message, availableAgents, teamLead)
 	return result
 }
 
@@ -173,23 +153,6 @@ func (m *MessageRouter) detectFollowUp(message string) string {
 	return ""
 }
 
-// skillKeywords maps message keywords to skill names.
-var skillKeywords = []struct {
-	pattern *regexp.Regexp
-	skills  []string
-}{
-	{regexp.MustCompile(`(?i)landing page|frontend|front-end|ui|ux|hero|cta|design`), []string{"frontend", "UI-UX", "components"}},
-	{regexp.MustCompile(`(?i)backend|back-end|api|endpoint|server|database`), []string{"backend", "APIs", "databases"}},
-	{regexp.MustCompile(`(?i)positioning|messaging|brand|marketing|copy|launch`), []string{"positioning", "messaging", "go-to-market"}},
-	{regexp.MustCompile(`(?i)brief|spec|requirements|roadmap|plan`), []string{"requirements", "roadmap", "planning"}},
-	{regexp.MustCompile(`(?i)research|investigate|analyze`), []string{"market-research", "competitive-analysis"}},
-	{regexp.MustCompile(`(?i)leads|prospect|outreach`), []string{"prospecting", "outreach"}},
-	{regexp.MustCompile(`(?i)enrich|validate|data quality`), []string{"data-enrichment", "validation"}},
-	{regexp.MustCompile(`(?i)seo|keyword|ranking|content`), []string{"seo", "content-analysis"}},
-	{regexp.MustCompile(`(?i)customer|success|health|renewal`), []string{"relationship-management", "health-scoring"}},
-	{regexp.MustCompile(`(?i)code|bug|fix|implement`), []string{"general", "planning"}},
-}
-
 // detectAtMention returns the slug of an explicitly @mentioned agent, if any.
 // Caller must hold m.mu.
 func (m *MessageRouter) detectAtMention(message string, agents []AgentInfo) string {
@@ -210,19 +173,189 @@ func (m *MessageRouter) detectAtMention(message string, agents []AgentInfo) stri
 	return ""
 }
 
-// ExtractSkills returns a deduplicated list of skills inferred from the message.
+// ExtractSkills returns generic routing terms inferred from the message text.
 func (m *MessageRouter) ExtractSkills(message string) []string {
-	seen := make(map[string]bool)
-	var out []string
-	for _, kw := range skillKeywords {
-		if kw.pattern.MatchString(message) {
-			for _, s := range kw.skills {
-				if !seen[s] {
-					seen[s] = true
-					out = append(out, s)
-				}
+	return extractRoutingTerms(message)
+}
+
+// ExtractRoutingTerms returns normalized routing terms for arbitrary message text.
+func ExtractRoutingTerms(message string) []string {
+	return extractRoutingTerms(message)
+}
+
+var routingWordPattern = regexp.MustCompile(`[a-z0-9]+`)
+
+var routingStopWords = map[string]struct{}{
+	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "be": {}, "but": {}, "by": {},
+	"can": {}, "could": {}, "do": {}, "for": {}, "from": {}, "have": {}, "help": {}, "i": {},
+	"in": {}, "is": {}, "it": {}, "just": {}, "make": {}, "me": {}, "need": {}, "new": {},
+	"of": {}, "on": {}, "or": {}, "our": {}, "please": {}, "set": {}, "should": {}, "that": {},
+	"the": {}, "their": {}, "then": {}, "there": {}, "this": {}, "to": {}, "up": {}, "us": {}, "want": {},
+	"hello": {}, "hi": {}, "hey": {}, "thanks": {}, "thank": {},
+	"we": {}, "with": {}, "you": {}, "your": {},
+}
+
+func (m *MessageRouter) inferCollaborators(message string, availableAgents []AgentInfo, teamLead string) []string {
+	messageTerms := extractRoutingTerms(message)
+	if len(messageTerms) == 0 {
+		return nil
+	}
+
+	type scoredAgent struct {
+		slug  string
+		score float64
+	}
+
+	var scored []scoredAgent
+	for _, agent := range availableAgents {
+		if agent.Slug == teamLead {
+			continue
+		}
+		score := scoreAgentAgainstMessage(messageTerms, agentRoutingTerms(agent))
+		if score >= 0.28 {
+			scored = append(scored, scoredAgent{slug: agent.Slug, score: score})
+		}
+	}
+
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].score == scored[j].score {
+			return scored[i].slug < scored[j].slug
+		}
+		return scored[i].score > scored[j].score
+	})
+
+	result := make([]string, 0, len(scored))
+	for _, item := range scored {
+		result = append(result, item.slug)
+	}
+	return result
+}
+
+func agentRoutingTerms(agent AgentInfo) []string {
+	return RoutingTerms(agent.Slug, agent.Expertise, agent.RoleTerms, nil)
+}
+
+// AgentRoutingTerms returns normalized routing terms for a slug plus its metadata.
+func AgentRoutingTerms(slug string, expertise []string, roleTerms []string) []string {
+	return RoutingTerms(slug, expertise, roleTerms, nil)
+}
+
+// RoutingTerms returns normalized routing terms for a routing candidate.
+func RoutingTerms(slug string, expertise []string, roleTerms []string, extraTerms []string) []string {
+	terms := make([]string, 0, 1+len(expertise)+len(roleTerms)+len(extraTerms))
+	terms = append(terms, slug)
+	terms = append(terms, expertise...)
+	terms = append(terms, roleTerms...)
+	terms = append(terms, extraTerms...)
+	return dedupeTerms(normalizeRoutingTerms(terms))
+}
+
+func scoreAgentAgainstMessage(messageTerms, agentTerms []string) float64 {
+	if len(messageTerms) == 0 || len(agentTerms) == 0 {
+		return 0
+	}
+
+	bestScores := make([]float64, 0, len(messageTerms))
+	for _, messageTerm := range messageTerms {
+		best := 0.0
+		for _, agentTerm := range agentTerms {
+			if score := similarity(messageTerm, agentTerm); score > best {
+				best = score
 			}
 		}
+		if best >= 0.3 {
+			bestScores = append(bestScores, best)
+		}
+	}
+
+	if len(bestScores) == 0 {
+		return 0
+	}
+
+	sort.Float64s(bestScores)
+	top := 2
+	if len(bestScores) < top {
+		top = len(bestScores)
+	}
+	sum := 0.0
+	for i := len(bestScores) - top; i < len(bestScores); i++ {
+		sum += bestScores[i]
+	}
+	return sum / float64(top)
+}
+
+// ScoreMessageAgainstAgent returns the metadata routing score for a message.
+func ScoreMessageAgainstAgent(message string, slug string, expertise []string, roleTerms []string) float64 {
+	return ScoreMessageAgainstTerms(message, AgentRoutingTerms(slug, expertise, roleTerms))
+}
+
+// ScoreMessageAgainstTerms returns the metadata routing score for message text
+// against a precomputed set of routing terms.
+func ScoreMessageAgainstTerms(message string, terms []string) float64 {
+	return scoreAgentAgainstMessage(ExtractRoutingTerms(message), dedupeTerms(normalizeRoutingTerms(terms)))
+}
+
+func extractRoutingTerms(message string) []string {
+	tokens := normalizeRoutingTerms(routingWordPattern.FindAllString(strings.ToLower(message), -1))
+	filtered := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if _, ok := routingStopWords[token]; !ok {
+			filtered = append(filtered, token)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	var out []string
+	for size := 1; size <= 3; size++ {
+		if len(filtered) < size {
+			break
+		}
+		for i := 0; i+size <= len(filtered); i++ {
+			out = append(out, strings.Join(filtered[i:i+size], " "))
+		}
+	}
+	return dedupeTerms(out)
+}
+
+func normalizeRoutingTerms(terms []string) []string {
+	out := make([]string, 0, len(terms))
+	for _, term := range terms {
+		normalized := normalizeRoutingTerm(term)
+		if normalized != "" {
+			out = append(out, normalized)
+		}
+	}
+	return out
+}
+
+func normalizeRoutingTerm(term string) string {
+	parts := routingWordPattern.FindAllString(strings.ToLower(term), -1)
+	if len(parts) == 0 {
+		return ""
+	}
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if _, ok := routingStopWords[part]; !ok {
+			filtered = append(filtered, part)
+		}
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	return strings.Join(filtered, " ")
+}
+
+func dedupeTerms(terms []string) []string {
+	seen := make(map[string]struct{}, len(terms))
+	out := make([]string, 0, len(terms))
+	for _, term := range terms {
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		out = append(out, term)
 	}
 	return out
 }

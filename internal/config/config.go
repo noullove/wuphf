@@ -12,6 +12,20 @@ import (
 	"strings"
 )
 
+// RuntimeHomeDir returns the home directory WUPHF should use for persisted
+// runtime state. Inventive runs may override this with WUPHF_RUNTIME_HOME so
+// they don't inherit an existing office from the user's global ~/.wuphf.
+func RuntimeHomeDir() string {
+	if v := strings.TrimSpace(os.Getenv("WUPHF_RUNTIME_HOME")); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 // Config mirrors ~/.wuphf/config.json.
 type Config struct {
 	APIKey              string `json:"api_key,omitempty"`
@@ -27,6 +41,8 @@ type Config struct {
 	AnthropicAPIKey     string `json:"anthropic_api_key,omitempty"`
 	OpenAIAPIKey        string `json:"openai_api_key,omitempty"`
 	MinimaxAPIKey       string `json:"minimax_api_key,omitempty"`
+	Blueprint           string `json:"blueprint,omitempty"`
+	// Pack is retained as a legacy alias for the active operation blueprint/template.
 	Pack                string `json:"pack,omitempty"`
 	TeamLeadSlug        string `json:"team_lead_slug,omitempty"`
 	MaxConcurrent       int    `json:"max_concurrent_agents,omitempty"`
@@ -62,6 +78,22 @@ type OpenclawBridgeBinding struct {
 	DisplayName string `json:"display_name,omitempty"`
 }
 
+// ActiveBlueprint returns the preferred operation blueprint/template id.
+// Blueprint is the primary field; Pack remains as a compatibility alias.
+func (c Config) ActiveBlueprint() string {
+	if v := strings.TrimSpace(c.Blueprint); v != "" {
+		return v
+	}
+	return strings.TrimSpace(c.Pack)
+}
+
+// SetActiveBlueprint stores the selected operation blueprint/template id in
+// the preferred field. The legacy Pack alias is retained for reads only.
+func (c *Config) SetActiveBlueprint(id string) {
+	id = strings.TrimSpace(id)
+	c.Blueprint = id
+}
+
 // ConfigPath returns the absolute path to ~/.wuphf/config.json, with a legacy
 // fallback to ~/.nex/config.json when the old file already exists.
 func ConfigPath() string {
@@ -71,8 +103,8 @@ func ConfigPath() string {
 	if p := strings.TrimSpace(os.Getenv("WUPHF_CONFIG_PATH")); p != "" {
 		return p
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := RuntimeHomeDir()
+	if home == "" {
 		return filepath.Join(".wuphf", "config.json")
 	}
 	newPath := filepath.Join(home, ".wuphf", "config.json")

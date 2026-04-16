@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nex-crm/wuphf/internal/buildinfo"
@@ -102,7 +103,9 @@ func main() {
 	format := flag.String("format", "text", "Output format (text, json)")
 	apiKeyFlag := flag.String("api-key", "", "API key for authentication")
 	showVersion := flag.Bool("version", false, "Print version and exit")
-	packFlag := flag.String("pack", "", "Agent pack (starter, founding-team, coding-team, lead-gen-agency, revops)")
+	blueprintFlag := flag.String("blueprint", "", "Operation blueprint ID for this run")
+	packFlag := flag.String("pack", "", "Operation blueprint ID (legacy pack alias supported)")
+	fromScratchFlag := flag.Bool("from-scratch", false, "Start without a saved blueprint and synthesize the first operation from the directive")
 	providerFlag := flag.String("provider", "", "LLM provider override for this run (claude-code, codex)")
 	oneOnOne := flag.Bool("1o1", false, "Launch a direct 1:1 session with a single agent (default ceo)")
 	channelView := flag.Bool("channel-view", false, "Run as channel view (internal)")
@@ -111,6 +114,7 @@ func main() {
 	unsafeMode := flag.Bool("unsafe", false, "Bypass all agent permission checks (use for local dev only)")
 	tuiMode := flag.Bool("tui", false, "Launch with tmux TUI instead of the web UI")
 	webPort := flag.Int("web-port", 7891, "Port for the web UI (default 7891)")
+	brokerPort := flag.Int("broker-port", 0, "Port for the local broker (default 7890)")
 	noNex := flag.Bool("no-nex", false, "Disable Nex completely for this run")
 	memoryBackend := flag.String("memory-backend", "", "Memory backend for organizational context (nex, gbrain, none)")
 	opusCEO := flag.Bool("opus-ceo", false, "Upgrade CEO agent from Sonnet to Opus")
@@ -143,6 +147,9 @@ func main() {
 	if *noNex {
 		_ = os.Setenv("WUPHF_NO_NEX", "1")
 	}
+	if *brokerPort > 0 {
+		_ = os.Setenv("WUPHF_BROKER_PORT", fmt.Sprintf("%d", *brokerPort))
+	}
 	if backend := strings.TrimSpace(*memoryBackend); backend != "" {
 		normalized := config.NormalizeMemoryBackend(backend)
 		if normalized == "" {
@@ -159,6 +166,24 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: unsupported provider %q (expected claude-code or codex)\n", provider)
 			os.Exit(1)
 		}
+	}
+	startFromScratch := *fromScratchFlag
+	if startFromScratch {
+		_ = os.Setenv("WUPHF_START_FROM_SCRATCH", "1")
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			_ = os.Setenv("WUPHF_GLOBAL_HOME", home)
+		}
+		if runtimeHome := fromScratchRuntimeHome(); runtimeHome != "" {
+			_ = os.Setenv("WUPHF_RUNTIME_HOME", runtimeHome)
+		}
+	}
+
+	selectedBlueprint := strings.TrimSpace(*blueprintFlag)
+	if selectedBlueprint == "" {
+		selectedBlueprint = strings.TrimSpace(*packFlag)
+	}
+	if startFromScratch {
+		selectedBlueprint = "__blank_slate__"
 	}
 
 	if *showVersion {
@@ -188,13 +213,21 @@ func main() {
 			}
 			return
 		case "shred", "kill":
-			l, err := team.NewLauncher(*packFlag)
+			l, err := team.NewLauncher(selectedBlueprint)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				os.Exit(1)
 			}
 			if err := l.Kill(); err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			if err := team.CleanupPersistedTaskWorktrees(); err != nil {
+				fmt.Fprintf(os.Stderr, "error: cleanup task worktrees: %v\n", err)
+				os.Exit(1)
+			}
+			if err := team.ClearPersistedBrokerState(); err != nil {
+				fmt.Fprintf(os.Stderr, "error: clear broker state: %v\n", err)
 				os.Exit(1)
 			}
 			fmt.Println("Session shredded. The office is dark. Michael is probably crying in the parking lot.")
@@ -229,12 +262,12 @@ func main() {
 
 	// TUI mode: tmux-based interface
 	if *tuiMode {
-		runTeam(args, *packFlag, *unsafeMode, *oneOnOne, *opusCEO, *collabMode)
+		runTeam(args, selectedBlueprint, *unsafeMode, *oneOnOne, *opusCEO, *collabMode)
 		return
 	}
 
 	// Default: web UI
-	runWeb(args, *packFlag, *unsafeMode, *webPort, *opusCEO, *collabMode, *noOpen)
+	runWeb(args, selectedBlueprint, *unsafeMode, *webPort, *opusCEO, *collabMode, *noOpen)
 }
 
 func runTeam(args []string, packSlug string, unsafe bool, oneOnOne bool, opusCEO bool, collabMode bool) {
@@ -280,6 +313,7 @@ func runTeam(args []string, packSlug string, unsafe bool, oneOnOne bool, opusCEO
 		if token := strings.TrimSpace(l.BrokerToken()); token != "" {
 			_ = os.Setenv("WUPHF_BROKER_TOKEN", token)
 		}
+		_ = os.Setenv("WUPHF_BROKER_BASE_URL", l.BrokerBaseURL())
 		_ = os.Setenv("WUPHF_HEADLESS_PROVIDER", "codex")
 		if oneOnOne {
 			_ = os.Setenv("WUPHF_ONE_ON_ONE", "1")
@@ -306,7 +340,7 @@ func runTeam(args []string, packSlug string, unsafe bool, oneOnOne bool, opusCEO
 		fmt.Fprintf(os.Stderr, "Could not attach to tmux (not a terminal?). The office is running without you — like when Michael went to New York.\n")
 		fmt.Fprintf(os.Stderr, "Team is running in background. Attach manually:\n")
 		fmt.Fprintf(os.Stderr, "  tmux -L wuphf attach -t wuphf-team\n")
-		fmt.Fprintf(os.Stderr, "Broker running on http://127.0.0.1:7890\n")
+		fmt.Fprintf(os.Stderr, "Broker running on %s\n", l.BrokerBaseURL())
 		fmt.Fprintf(os.Stderr, "Press Ctrl+C to stop.\n")
 		// Block forever — broker + notification loop stay alive
 		select {}
@@ -336,6 +370,26 @@ func runWeb(args []string, packSlug string, unsafe bool, webPort int, opusCEO bo
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func fromScratchRuntimeHome() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return ""
+	}
+	base := filepath.Join(cwd, ".wuphf")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return ""
+	}
+	dir, err := os.MkdirTemp(base, "from-scratch-runtime-")
+	if err != nil {
+		return ""
+	}
+	return dir
 }
 
 func dispatch(cmd string, apiKeyFlag string, format string) {

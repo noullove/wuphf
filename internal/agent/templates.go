@@ -1,7 +1,9 @@
 package agent
 
-// Templates is the built-in agent template registry (keyed by slug, without slug field set).
-var Templates = map[string]AgentConfig{
+// legacyTemplates retains the old built-in agent templates strictly as a
+// compatibility fallback. Blueprint-backed startup is the preferred source of
+// truth.
+var legacyTemplates = map[string]AgentConfig{
 	"seo-agent": {
 		Name:          "SEO Analyst",
 		Expertise:     []string{"seo", "content-analysis", "keyword-research"},
@@ -51,4 +53,20 @@ var Templates = map[string]AgentConfig{
 		HeartbeatCron: "daily",
 		Tools:         []string{"nex_search", "nex_ask", "nex_remember", "nex_record_list", "nex_record_get", "nex_record_create", "nex_record_update"},
 	},
+}
+
+// LegacyTemplateNames returns the compatibility template names, sorted by the
+// caller if ordering matters.
+func LegacyTemplateNames() []string {
+	names := make([]string, 0, len(legacyTemplates))
+	for name := range legacyTemplates {
+		names = append(names, name)
+	}
+	return names
+}
+
+// LookupLegacyTemplate returns a compatibility template by name.
+func LookupLegacyTemplate(name string) (AgentConfig, bool) {
+	cfg, ok := legacyTemplates[name]
+	return cfg, ok
 }

@@ -7,6 +7,7 @@ func RegisterAllCommands(r *Registry) {
 	r.Register(SlashCommand{Name: "ask", Description: "Ask the AI a question", Execute: cmdAsk})
 	r.Register(SlashCommand{Name: "search", Description: "Search knowledge base", Execute: cmdSearch})
 	r.Register(SlashCommand{Name: "remember", Description: "Store information", Execute: cmdRemember})
+	r.Register(SlashCommand{Name: "youtube-pack", Description: "Generate YouTube content packages", Execute: cmdYouTubePack})
 
 	// Data
 	r.Register(SlashCommand{Name: "object", Description: "Object commands (list/get/create/update/delete)", Execute: cmdObject})

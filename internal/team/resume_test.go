@@ -8,8 +8,8 @@ import (
 	"github.com/nex-crm/wuphf/internal/agent"
 )
 
-// agent is used by TestBuildResumePacketsRouting to construct a Launcher with a pack.
-var _ = agent.Packs
+// agent is used by the routing tests to construct legacy compatibility packs.
+var _ = agent.LookupLegacyPack
 
 func TestFindUnansweredMessagesAllAnswered(t *testing.T) {
 	humanMsgs := []channelMessage{
@@ -219,6 +219,52 @@ func TestBuildResumePacketsTaggedMessageRoutesToTaggedAgent(t *testing.T) {
 	// ceo should not receive a packet for this message (it was tagged only @fe).
 	if p, ok := packets["ceo"]; ok && strings.Contains(p, "login page") {
 		t.Error("expected ceo NOT to receive the tagged message meant for fe")
+	}
+}
+
+func TestBuildResumePacketsIncludesDynamicBrokerMembersOutsideLaunchPack(t *testing.T) {
+	oldPathFn := brokerStatePath
+	tmpDir := t.TempDir()
+	brokerStatePath = func() string { return filepath.Join(tmpDir, "broker-state.json") }
+	defer func() { brokerStatePath = oldPathFn }()
+
+	b := NewBroker()
+	b.mu.Lock()
+	b.members = []officeMember{
+		{Slug: "ceo", Name: "CEO"},
+		{Slug: "executor", Name: "Executor"},
+		{Slug: "builder", Name: "Builder"},
+	}
+	b.channels = []teamChannel{{
+		Slug:    "youtube-factory",
+		Name:    "youtube-factory",
+		Members: []string{"ceo", "executor", "builder"},
+	}}
+	b.tasks = []teamTask{{
+		ID:        "task-44",
+		Channel:   "youtube-factory",
+		Title:     "Restore Remotion dependency path",
+		Owner:     "builder",
+		Status:    "in_progress",
+		CreatedBy: "ceo",
+	}}
+	b.mu.Unlock()
+
+	l := &Launcher{
+		broker: b,
+		pack: &agent.PackDefinition{
+			Slug:     "blank-slate",
+			LeadSlug: "ceo",
+			Agents: []agent.AgentConfig{
+				{Slug: "ceo", Name: "CEO"},
+				{Slug: "executor", Name: "Executor"},
+			},
+		},
+	}
+
+	packets := l.buildResumePackets()
+	if _, ok := packets["builder"]; !ok {
+		t.Fatalf("expected dynamic broker member outside launch pack to receive a resume packet, got %+v", packets)
 	}
 }
 

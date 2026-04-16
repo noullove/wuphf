@@ -16,6 +16,9 @@ type PrereqResult struct {
 	// Found is true when the binary was located on PATH.
 	Found bool `json:"found"`
 
+	// OK is a compatibility alias for Found used by the browser onboarding UI.
+	OK bool `json:"ok"`
+
 	// Version is the parsed version string from <name> --version, or empty.
 	Version string `json:"version,omitempty"`
 
@@ -66,6 +69,7 @@ func CheckOne(name string) PrereqResult {
 		return r
 	}
 	r.Found = true
+	r.OK = true
 
 	// Best-effort version capture; ignore errors.
 	out, err := exec.Command(name, "--version").Output()

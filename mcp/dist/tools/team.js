@@ -1,7 +1,49 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-const brokerBaseUrl = (process.env.NEX_TEAM_BROKER_URL ?? "http://127.0.0.1:7890").replace(/\/+$/, "");
-const brokerTokenPath = process.env.NEX_BROKER_TOKEN_FILE ?? "/tmp/wuphf-broker-token";
+const defaultBrokerPort = 7890;
+function parsePort(raw) {
+    const port = Number.parseInt((raw ?? "").trim(), 10);
+    return Number.isFinite(port) && port > 0 ? port : 0;
+}
+function resolveBrokerBaseUrl() {
+    for (const key of ["WUPHF_BROKER_BASE_URL", "NEX_BROKER_BASE_URL", "WUPHF_TEAM_BROKER_URL", "NEX_TEAM_BROKER_URL"]) {
+        const value = (process.env[key] ?? "").trim();
+        if (value)
+            return value.replace(/\/+$/, "");
+    }
+    const port = resolveBrokerPort();
+    return `http://127.0.0.1:${port}`;
+}
+function resolveBrokerPort() {
+    for (const key of ["WUPHF_BROKER_PORT", "NEX_BROKER_PORT"]) {
+        const port = parsePort(process.env[key]);
+        if (port > 0)
+            return port;
+    }
+    const base = (process.env.WUPHF_BROKER_BASE_URL ?? process.env.NEX_BROKER_BASE_URL ?? process.env.WUPHF_TEAM_BROKER_URL ?? process.env.NEX_TEAM_BROKER_URL ?? "").trim();
+    if (base) {
+        try {
+            const parsed = new URL(base);
+            const parsedPort = parsePort(parsed.port);
+            if (parsedPort > 0)
+                return parsedPort;
+        }
+        catch {
+        }
+    }
+    return defaultBrokerPort;
+}
+function resolveBrokerTokenPath() {
+    for (const key of ["WUPHF_BROKER_TOKEN_FILE", "NEX_BROKER_TOKEN_FILE"]) {
+        const value = (process.env[key] ?? "").trim();
+        if (value)
+            return value;
+    }
+    const port = resolveBrokerPort();
+    return port === defaultBrokerPort ? "/tmp/wuphf-broker-token" : `/tmp/wuphf-broker-token-${port}`;
+}
+const brokerBaseUrl = resolveBrokerBaseUrl();
+const brokerTokenPath = resolveBrokerTokenPath();
 function resolveSlug(input) {
     const slug = input ?? process.env.NEX_AGENT_SLUG ?? "";
     if (!slug) {

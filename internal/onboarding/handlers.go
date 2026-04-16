@@ -14,9 +14,9 @@ import (
 // Pass nil to defer wiring — the broker should supply a real implementation
 // that seeds the team, posts the first message, and triggers the CEO turn.
 //
-// packSlug identifies the active agent pack (e.g. "founding-team", "revops").
-// HandleTemplates uses it to return pack-appropriate first-task suggestions.
-// Pass "" to fall back to the default founding-team templates.
+// packSlug is a legacy selection identifier. HandleTemplates uses it to
+// return operation-appropriate first-task suggestions and falls back to the
+// generic compatibility templates when no blueprint-specific set exists.
 //
 // Routes registered:
 //
@@ -61,6 +61,7 @@ func HandleState(w http.ResponseWriter, r *http.Request) {
 		"version":             s.Version,
 		"completed_at":        s.CompletedAt,
 		"company_name":        s.CompanyName,
+		"step":                onboardingStateStep(s),
 		"completed_steps":     s.CompletedSteps,
 		"checklist_dismissed": s.ChecklistDismissed,
 		"partial":             s.Partial,
@@ -79,19 +80,21 @@ func HandleProgress(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var body struct {
-		Step    string                 `json:"step"`
-		Answers map[string]interface{} `json:"answers"`
-	}
+	var body map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if body.Step == "" {
+	step := strings.TrimSpace(anyString(body["step"]))
+	if step == "" {
 		http.Error(w, "step required", http.StatusBadRequest)
 		return
 	}
-	if err := SaveProgress(body.Step, body.Answers); err != nil {
+	answers := anyMap(body["answers"])
+	if len(answers) == 0 {
+		answers = legacyProgressAnswers(body)
+	}
+	if err := SaveProgress(step, answers); err != nil {
 		http.Error(w, "failed to save progress", http.StatusInternalServerError)
 		return
 	}
@@ -165,14 +168,7 @@ func HandleComplete(w http.ResponseWriter, r *http.Request, completeFn func(task
 	}
 
 	// Build the completed payload — prepare the response before writing disk.
-	companyName := ""
-	if s.Partial != nil {
-		if welcome, ok := s.Partial.Answers["welcome"]; ok {
-			if cn, ok := welcome["company_name"].(string); ok {
-				companyName = cn
-			}
-		}
-	}
+	companyName := onboardingPartialCompanyName(s.Partial)
 	completeState(s, companyName)
 
 	if err := Save(s); err != nil {
@@ -185,6 +181,56 @@ func HandleComplete(w http.ResponseWriter, r *http.Request, completeFn func(task
 		"ok":       true,
 		"redirect": "/",
 	})
+}
+
+func onboardingStateStep(s *State) string {
+	if s == nil || s.Partial == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.Partial.Step)
+}
+
+func anyString(value interface{}) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func anyMap(value interface{}) map[string]interface{} {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	return m
+}
+
+func legacyProgressAnswers(body map[string]interface{}) map[string]interface{} {
+	answers := make(map[string]interface{})
+	for key, value := range body {
+		switch key {
+		case "step", "answers":
+			continue
+		default:
+			answers[key] = value
+		}
+	}
+	return answers
+}
+
+func onboardingPartialCompanyName(partial *PartialProgress) string {
+	if partial == nil || partial.Answers == nil {
+		return ""
+	}
+	for _, step := range []string{"welcome", "setup"} {
+		answers := partial.Answers[step]
+		for _, key := range []string{"company_name", "company"} {
+			if value, ok := answers[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
 }
 
 // validateProviderKey pings the provider API with a minimal request to verify
@@ -321,8 +367,8 @@ func HandleValidateKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // makeHandleTemplates returns a handler for GET /onboarding/templates that
-// closes over packSlug. The broker supplies the active pack slug so the
-// first-task suggestions match the team the user is actually launching.
+// closes over the active selection so the first-task suggestions match the
+// operation the user is actually launching.
 func makeHandleTemplates(packSlug string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		HandleTemplates(w, r, packSlug)
@@ -330,15 +376,15 @@ func makeHandleTemplates(packSlug string) http.HandlerFunc {
 }
 
 // HandleTemplates handles GET /onboarding/templates.
-// Returns JSON array of TaskTemplate for the given pack. An empty packSlug
-// falls back to the default founding-team templates.
+// Returns JSON array of TaskTemplate for the given selection. An empty
+// selection falls back to the generic compatibility templates.
 func HandleTemplates(w http.ResponseWriter, r *http.Request, packSlug string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(TemplatesForPack(packSlug))
+	json.NewEncoder(w).Encode(TemplatesForSelection("", packSlug))
 }
 
 // HandleChecklistDismiss handles POST /onboarding/checklist/dismiss.

@@ -13,31 +13,40 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/nex-crm/wuphf/internal/action"
 	"github.com/nex-crm/wuphf/internal/agent"
+	"github.com/nex-crm/wuphf/internal/brokeraddr"
 	"github.com/nex-crm/wuphf/internal/buildinfo"
 	"github.com/nex-crm/wuphf/internal/channel"
 	"github.com/nex-crm/wuphf/internal/company"
 	"github.com/nex-crm/wuphf/internal/config"
 	"github.com/nex-crm/wuphf/internal/nex"
 	"github.com/nex-crm/wuphf/internal/onboarding"
+	"github.com/nex-crm/wuphf/internal/operations"
 	"github.com/nex-crm/wuphf/internal/provider"
 )
 
-const BrokerPort = 7890
+const BrokerPort = brokeraddr.DefaultPort
 
 // brokerTokenFilePath is the path where the broker writes its auth token on start.
 // Tests can redirect this to a temp directory to avoid clobbering the live broker token.
-var brokerTokenFilePath = "/tmp/wuphf-broker-token"
+var brokerTokenFilePath = brokeraddr.DefaultTokenFile
 
 const defaultRateLimitRequestsPerWindow = 600
 const defaultRateLimitWindow = time.Minute
 
 var brokerStatePath = defaultBrokerStatePath
+
+var studioPackageGenerator = provider.RunCodexOneShot
+
+var externalRetryAfterPattern = regexp.MustCompile(`(?i)retry after ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z?)`)
 
 // agentStreamBuffer holds recent stdout/stderr lines from a headless agent
 // process and fans them out to SSE subscribers in real time.
@@ -443,6 +452,7 @@ type Broker struct {
 	webUIOrigins        []string // allowed CORS origins for web UI (set by ServeWebUI)
 	runtimeProvider     string   // "codex" or "claude" — set by launcher
 	packSlug            string   // active agent pack slug ("founding-team", "revops", ...) — set by launcher
+	blankSlateLaunch    bool     // start without a saved blueprint and synthesize the first operation
 	openclawBridge      *OpenclawBridge // nil until the bridge attaches itself; used by handleOfficeMembers for live add/remove
 	generateMemberFn    func(prompt string) (generatedMemberTemplate, error)
 	generateChannelFn   func(prompt string) (generatedChannelTemplate, error)
@@ -464,11 +474,116 @@ func taskNeedsLocalWorktree(task *teamTask) bool {
 		return false
 	}
 	switch strings.TrimSpace(task.Status) {
-	case "", "open", "done":
+	case "", "open":
 		return false
+	case "done":
+		return strings.TrimSpace(task.WorktreePath) != "" || strings.TrimSpace(task.WorktreeBranch) != ""
 	default:
 		return true
 	}
+}
+
+func taskBlockReasonLooksLikeWorkspaceWriteIssue(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return false
+	}
+	markers := []string{
+		"read-only",
+		"read only",
+		"writable workspace",
+		"write access",
+		"filesystem sandbox",
+		"workspace sandbox",
+		"operation not permitted",
+		"permission denied",
+	}
+	for _, marker := range markers {
+		if strings.Contains(reason, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func rejectFalseLocalWorktreeBlock(task *teamTask, reason string) error {
+	if task == nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+		return nil
+	}
+	if !taskBlockReasonLooksLikeWorkspaceWriteIssue(reason) {
+		return nil
+	}
+	worktreePath := strings.TrimSpace(task.WorktreePath)
+	if worktreePath == "" {
+		return nil
+	}
+	if err := verifyTaskWorktreeWritable(worktreePath); err == nil {
+		return fmt.Errorf("assigned local worktree is writable at %s; do not request writable-workspace approval; continue implementation in that worktree", worktreePath)
+	}
+	return nil
+}
+
+func taskRequiresExclusiveOwnerTurn(task *teamTask) bool {
+	if task == nil {
+		return false
+	}
+	if strings.TrimSpace(task.Owner) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(task.ExecutionMode)) {
+	case "local_worktree", "live_external":
+		return true
+	default:
+		return false
+	}
+}
+
+func taskStatusConsumesExclusiveOwnerTurn(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "in_progress", "review":
+		return true
+	default:
+		return false
+	}
+}
+
+func stringSliceContainsFold(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseBrokerTimestamp(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return ts.UTC()
+}
+
+func taskChannelCandidateOwnerAllowed(ch *teamChannel, owner string) bool {
+	if ch == nil {
+		return false
+	}
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return true
+	}
+	return stringSliceContainsFold(ch.Members, owner) || strings.EqualFold(strings.TrimSpace(ch.CreatedBy), owner)
 }
 
 func (b *Broker) syncTaskWorktreeLocked(task *teamTask) error {
@@ -486,6 +601,18 @@ func (b *Broker) syncTaskWorktreeLocked(task *teamTask) error {
 	}
 	if taskNeedsLocalWorktree(task) {
 		if strings.TrimSpace(task.WorktreePath) != "" && strings.TrimSpace(task.WorktreeBranch) != "" {
+			if taskWorktreeSourceLooksUsable(task.WorktreePath) {
+				return nil
+			}
+			if err := cleanupTaskWorktree(task.WorktreePath, task.WorktreeBranch); err != nil {
+				return err
+			}
+			task.WorktreePath = ""
+			task.WorktreeBranch = ""
+		}
+		if path, branch := b.reusableDependencyWorktreeLocked(task); path != "" && branch != "" {
+			task.WorktreePath = path
+			task.WorktreeBranch = branch
 			return nil
 		}
 		path, branch, err := prepareTaskWorktree(task.ID)
@@ -506,6 +633,152 @@ func (b *Broker) syncTaskWorktreeLocked(task *teamTask) error {
 	task.WorktreePath = ""
 	task.WorktreeBranch = ""
 	return nil
+}
+
+func (b *Broker) reusableDependencyWorktreeLocked(task *teamTask) (string, string) {
+	if b == nil || task == nil || len(task.DependsOn) == 0 {
+		return "", ""
+	}
+	owner := strings.TrimSpace(task.Owner)
+	var fallbackPath string
+	var fallbackBranch string
+	for _, depID := range task.DependsOn {
+		depID = strings.TrimSpace(depID)
+		if depID == "" {
+			continue
+		}
+		for i := range b.tasks {
+			dep := &b.tasks[i]
+			if strings.TrimSpace(dep.ID) != depID {
+				continue
+			}
+			if !strings.EqualFold(strings.TrimSpace(dep.ExecutionMode), "local_worktree") {
+				continue
+			}
+			path := strings.TrimSpace(dep.WorktreePath)
+			branch := strings.TrimSpace(dep.WorktreeBranch)
+			if path == "" || branch == "" {
+				continue
+			}
+			status := strings.ToLower(strings.TrimSpace(dep.Status))
+			review := strings.ToLower(strings.TrimSpace(dep.ReviewState))
+			if status != "review" && status != "done" && review != "ready_for_review" && review != "approved" {
+				continue
+			}
+			if owner != "" && strings.TrimSpace(dep.Owner) == owner {
+				return path, branch
+			}
+			if fallbackPath == "" && fallbackBranch == "" {
+				fallbackPath = path
+				fallbackBranch = branch
+			}
+		}
+	}
+	return fallbackPath, fallbackBranch
+}
+
+func (b *Broker) activeExclusiveOwnerTaskLocked(owner, excludeTaskID string) *teamTask {
+	owner = strings.TrimSpace(owner)
+	excludeTaskID = strings.TrimSpace(excludeTaskID)
+	if b == nil || owner == "" {
+		return nil
+	}
+	for i := range b.tasks {
+		task := &b.tasks[i]
+		if excludeTaskID != "" && strings.TrimSpace(task.ID) == excludeTaskID {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(task.Owner), owner) {
+			continue
+		}
+		if !taskRequiresExclusiveOwnerTurn(task) {
+			continue
+		}
+		if !taskStatusConsumesExclusiveOwnerTurn(task.Status) {
+			continue
+		}
+		return task
+	}
+	return nil
+}
+
+func (b *Broker) queueTaskBehindActiveOwnerLaneLocked(task *teamTask) {
+	if b == nil || task == nil {
+		return
+	}
+	if !taskRequiresExclusiveOwnerTurn(task) {
+		return
+	}
+	if !taskStatusConsumesExclusiveOwnerTurn(task.Status) {
+		return
+	}
+	active := b.activeExclusiveOwnerTaskLocked(task.Owner, task.ID)
+	if active == nil {
+		return
+	}
+	if !stringSliceContainsFold(task.DependsOn, active.ID) {
+		task.DependsOn = append(task.DependsOn, active.ID)
+	}
+	task.Blocked = true
+	task.Status = "open"
+	queueNote := fmt.Sprintf("Queued behind %s so @%s only carries one active %s lane at a time.", active.ID, strings.TrimSpace(task.Owner), strings.TrimSpace(task.ExecutionMode))
+	switch existing := strings.TrimSpace(task.Details); {
+	case existing == "":
+		task.Details = queueNote
+	case !strings.Contains(existing, queueNote):
+		task.Details = existing + "\n\n" + queueNote
+	}
+}
+
+func (b *Broker) preferredTaskChannelLocked(requestedChannel, createdBy, owner, title, details string) string {
+	channel := normalizeChannelSlug(requestedChannel)
+	if channel == "" {
+		channel = "general"
+	}
+	if channel != "general" || b == nil {
+		return channel
+	}
+	createdBy = strings.TrimSpace(createdBy)
+	if createdBy == "" {
+		return channel
+	}
+	probe := teamTask{
+		Channel: channel,
+		Owner:   strings.TrimSpace(owner),
+		Title:   strings.TrimSpace(title),
+		Details: strings.TrimSpace(details),
+	}
+	if !taskLooksLikeLiveBusinessObjective(&probe) {
+		return channel
+	}
+	now := time.Now().UTC()
+	var best *teamChannel
+	var bestCreated time.Time
+	for i := range b.channels {
+		ch := &b.channels[i]
+		slug := normalizeChannelSlug(ch.Slug)
+		if slug == "" || slug == "general" || ch.isDM() {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(ch.CreatedBy), createdBy) {
+			continue
+		}
+		if !taskChannelCandidateOwnerAllowed(ch, owner) {
+			continue
+		}
+		createdAt := parseBrokerTimestamp(ch.CreatedAt)
+		if !createdAt.IsZero() && now.Sub(createdAt) > 20*time.Minute {
+			continue
+		}
+		if best == nil || (!createdAt.IsZero() && createdAt.After(bestCreated)) {
+			best = ch
+			bestCreated = createdAt
+		}
+	}
+	if best == nil {
+		return channel
+	}
+	return normalizeChannelSlug(best.Slug)
 }
 
 // generateToken returns a cryptographically random hex token.
@@ -753,12 +1026,7 @@ func (b *Broker) ChannelStore() *channel.Store {
 // Accepts token via Authorization header or ?token= query parameter (for EventSource which can't set headers).
 func (b *Broker) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if auth == "Bearer "+b.token {
-			next(w, r)
-			return
-		}
-		if r.URL.Query().Get("token") == b.token {
+		if b.requestHasBrokerAuth(r) {
 			next(w, r)
 			return
 		}
@@ -766,9 +1034,9 @@ func (b *Broker) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// Start launches the broker on localhost:7890.
+// Start launches the broker on the configured localhost port.
 func (b *Broker) Start() error {
-	return b.StartOnPort(BrokerPort)
+	return b.StartOnPort(brokeraddr.ResolvePort())
 }
 
 // StartOnPort launches the broker on the given port. Use 0 for an OS-assigned port.
@@ -792,6 +1060,10 @@ func (b *Broker) StartOnPort(port int) error {
 	mux.HandleFunc("/tasks/ack", b.requireAuth(b.handleTaskAck))
 	mux.HandleFunc("/task-plan", b.requireAuth(b.handleTaskPlan))
 	mux.HandleFunc("/memory", b.requireAuth(b.handleMemory))
+	mux.HandleFunc("/studio/generate-package", b.requireAuth(b.handleStudioGeneratePackage))
+	mux.HandleFunc("/studio/bootstrap-package", b.requireAuth(b.handleOperationBootstrapPackage))
+	mux.HandleFunc("/operations/bootstrap-package", b.requireAuth(b.handleOperationBootstrapPackage))
+	mux.HandleFunc("/studio/run-workflow", b.requireAuth(b.handleStudioRunWorkflow))
 	mux.HandleFunc("/requests", b.requireAuth(b.handleRequests))
 	mux.HandleFunc("/requests/answer", b.requireAuth(b.handleRequestAnswer))
 	mux.HandleFunc("/interview", b.requireAuth(b.handleInterview))
@@ -834,10 +1106,14 @@ func (b *Broker) StartOnPort(port int) error {
 		// No WriteTimeout — SSE streams (agent-stream, events) are open-ended.
 	}
 
-	// Write token to well-known path so tests and tools can authenticate.
+	// Write token to a well-known path so tests and tools can authenticate.
 	// Use /tmp directly (not os.TempDir which varies by OS).
-	if brokerTokenFilePath != "" {
-		_ = os.WriteFile(brokerTokenFilePath, []byte(b.token), 0600)
+	tokenFile := strings.TrimSpace(brokerTokenFilePath)
+	if tokenFile == "" || tokenFile == brokeraddr.DefaultTokenFile {
+		tokenFile = brokeraddr.ResolveTokenFile()
+	}
+	if tokenFile != "" {
+		_ = os.WriteFile(tokenFile, []byte(b.token), 0o600)
 	}
 
 	go func() {
@@ -856,7 +1132,7 @@ func (b *Broker) Stop() {
 func (b *Broker) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Exempt liveness and version checks from rate limiting
-		if r.URL.Path == "/health" || r.URL.Path == "/version" || r.URL.Path == "/web-token" {
+		if r.URL.Path == "/health" || r.URL.Path == "/version" || r.URL.Path == "/web-token" || b.requestHasBrokerAuth(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -922,6 +1198,24 @@ func (b *Broker) consumeRateLimit(clientIP string) (time.Duration, bool) {
 	bucket.timestamps = append(bucket.timestamps, now)
 	b.rateLimitBuckets[key] = bucket
 	return 0, false
+}
+
+func externalWorkflowRetryAfter(err error, now time.Time) (time.Time, bool) {
+	if err == nil {
+		return time.Time{}, false
+	}
+	matches := externalRetryAfterPattern.FindStringSubmatch(err.Error())
+	if len(matches) < 2 {
+		return time.Time{}, false
+	}
+	retryAt, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(matches[1]))
+	if parseErr != nil {
+		return time.Time{}, false
+	}
+	if retryAt.Before(now) {
+		return now, true
+	}
+	return retryAt, true
 }
 
 func pruneRateLimitEntries(entries []time.Time, cutoff time.Time) []time.Time {
@@ -996,6 +1290,24 @@ func setProxyClientIPHeaders(header http.Header, remoteAddr string) {
 	}
 }
 
+func (b *Broker) requestAuthToken(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if token := strings.TrimSpace(r.URL.Query().Get("token")); token != "" {
+		return token
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	}
+	return ""
+}
+
+func (b *Broker) requestHasBrokerAuth(r *http.Request) bool {
+	return b.requestAuthToken(r) == b.token
+}
+
 // corsMiddleware adds CORS headers only for the web UI origin.
 // If no web UI origins are configured, no CORS headers are set.
 func (b *Broker) corsMiddleware(next http.Handler) http.Handler {
@@ -1042,14 +1354,7 @@ func (b *Broker) handleWebToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *Broker) handleEvents(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	if token == "" {
-		auth := strings.TrimSpace(r.Header.Get("Authorization"))
-		if strings.HasPrefix(auth, "Bearer ") {
-			token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
-		}
-	}
-	if token != b.token {
+	if !b.requestHasBrokerAuth(r) {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -1198,11 +1503,31 @@ func (b *Broker) ServeWebUI(port int) {
 		webDir = "web"
 	}
 	mux := http.NewServeMux()
-	// Reverse proxy: /api/* → broker on :7890. Same origin, no CORS.
-	brokerURL := fmt.Sprintf("http://127.0.0.1:%d", BrokerPort)
-	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-		// Strip /api prefix and forward to broker
-		targetPath := strings.TrimPrefix(r.URL.Path, "/api")
+	brokerURL := brokeraddr.ResolveBaseURL()
+	if addr := strings.TrimSpace(b.Addr()); addr != "" {
+		brokerURL = "http://" + addr
+	}
+	// Same-origin proxy to the broker for app API routes and onboarding wizard routes.
+	mux.Handle("/api/", b.webUIProxyHandler(brokerURL, "/api"))
+	mux.Handle("/onboarding/", b.webUIProxyHandler(brokerURL, ""))
+	// Token endpoint — no auth needed, same origin
+	mux.HandleFunc("/api-token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"token":      b.token,
+			"broker_url": brokerURL,
+		})
+	})
+	mux.Handle("/", http.FileServer(http.Dir(webDir)))
+	go http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", port), mux)
+}
+
+func (b *Broker) webUIProxyHandler(brokerURL, stripPrefix string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetPath := r.URL.Path
+		if stripPrefix != "" {
+			targetPath = strings.TrimPrefix(targetPath, stripPrefix)
+		}
 		if targetPath == "" {
 			targetPath = "/"
 		}
@@ -1217,11 +1542,9 @@ func (b *Broker) ServeWebUI(port int) {
 			return
 		}
 		setProxyClientIPHeaders(proxyReq.Header, r.RemoteAddr)
-		// Forward auth header
 		proxyReq.Header.Set("Authorization", "Bearer "+b.token)
 		proxyReq.Header.Set("Content-Type", r.Header.Get("Content-Type"))
 
-		// Use a client with no timeout for SSE streams.
 		client := http.DefaultClient
 		if r.Header.Get("Accept") == "text/event-stream" {
 			client = &http.Client{Timeout: 0}
@@ -1233,7 +1556,6 @@ func (b *Broker) ServeWebUI(port int) {
 		}
 		defer resp.Body.Close()
 
-		// Copy response headers and body
 		for k, v := range resp.Header {
 			for _, vv := range v {
 				w.Header().Add(k, vv)
@@ -1241,7 +1563,6 @@ func (b *Broker) ServeWebUI(port int) {
 		}
 		w.WriteHeader(resp.StatusCode)
 
-		// For SSE streams, flush each chunk as it arrives.
 		if resp.Header.Get("Content-Type") == "text/event-stream" {
 			flusher, canFlush := w.(http.Flusher)
 			buf := make([]byte, 4096)
@@ -1261,13 +1582,6 @@ func (b *Broker) ServeWebUI(port int) {
 		}
 		io.Copy(w, resp.Body)
 	})
-	// Token endpoint — no auth needed, same origin
-	mux.HandleFunc("/api-token", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"token": b.token})
-	})
-	mux.Handle("/", http.FileServer(http.Dir(webDir)))
-	go http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", port), mux)
 }
 
 // Messages returns all channel messages (for the Go TUI channel view).
@@ -1774,6 +2088,7 @@ func (b *Broker) Reset() {
 	b.sessionMode = mode
 	b.oneOnOneAgent = agent
 	_ = b.saveLocked()
+	_ = os.Remove(brokerStateSnapshotPath())
 	b.mu.Unlock()
 }
 
@@ -1784,25 +2099,66 @@ func defaultBrokerStatePath() string {
 	if p := strings.TrimSpace(os.Getenv("WUPHF_BROKER_STATE_PATH")); p != "" {
 		return p
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := config.RuntimeHomeDir()
+	if home == "" {
 		return filepath.Join(".wuphf", "team", "broker-state.json")
 	}
 	return filepath.Join(home, ".wuphf", "team", "broker-state.json")
 }
 
-func (b *Broker) loadState() error {
-	path := brokerStatePath()
+func brokerStateSnapshotPath() string {
+	return brokerStatePath() + ".last-good"
+}
+
+func loadBrokerStateFile(path string) (brokerState, error) {
+	var state brokerState
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
+		return state, err
 	}
-	var state brokerState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return err
+		return state, err
+	}
+	return state, nil
+}
+
+func brokerStateActivityScore(state brokerState) int {
+	score := 0
+	score += len(state.Messages) * 10
+	score += len(state.Tasks) * 20
+	score += len(activeRequests(state.Requests)) * 10
+	score += len(state.Actions) * 4
+	score += len(state.Signals) * 4
+	score += len(state.Decisions) * 4
+	score += len(state.Skills) * 2
+	score += len(state.Policies)
+	for _, ns := range state.SharedMemory {
+		score += len(ns)
+	}
+	if state.PendingInterview != nil {
+		score += 5
+	}
+	return score
+}
+
+func brokerStateShouldSnapshot(state brokerState) bool {
+	return brokerStateActivityScore(state) > 0
+}
+
+func (b *Broker) loadState() error {
+	path := brokerStatePath()
+	state, err := loadBrokerStateFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		state = brokerState{}
+	}
+	snapshotPath := brokerStateSnapshotPath()
+	if snapshot, snapErr := loadBrokerStateFile(snapshotPath); snapErr == nil {
+		if brokerStateActivityScore(snapshot) > brokerStateActivityScore(state) {
+			state = snapshot
+		}
 	}
 	b.messages = state.Messages
 	b.members = state.Members
@@ -1860,8 +2216,12 @@ func (b *Broker) loadState() error {
 
 func (b *Broker) saveLocked() error {
 	path := brokerStatePath()
+	snapshotPath := brokerStateSnapshotPath()
 	if len(b.messages) == 0 && len(b.tasks) == 0 && len(activeRequests(b.requests)) == 0 && len(b.actions) == 0 && len(b.signals) == 0 && len(b.decisions) == 0 && len(b.watchdogs) == 0 && len(b.policies) == 0 && len(b.scheduler) == 0 && len(b.skills) == 0 && len(b.sharedMemory) == 0 && isDefaultChannelState(b.channels) && isDefaultOfficeMemberState(b.members) && b.counter == 0 && b.notificationSince == "" && b.insightsSince == "" && usageStateIsZero(b.usage) && b.sessionMode == SessionModeOffice && b.oneOnOneAgent == DefaultOneOnOneAgent {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Remove(snapshotPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
@@ -1911,12 +2271,24 @@ func (b *Broker) saveLocked() error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if brokerStateShouldSnapshot(state) {
+		snapshotTmp := snapshotPath + ".tmp"
+		if err := os.WriteFile(snapshotTmp, data, 0o600); err != nil {
+			return err
+		}
+		if err := os.Rename(snapshotTmp, snapshotPath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func defaultOfficeMembers() []officeMember {
 	now := time.Now().UTC().Format(time.RFC3339)
-	manifest, err := company.LoadManifest()
+	manifest, err := company.LoadRuntimeManifest(repoRootForRuntimeDefaults())
 	if err != nil || len(manifest.Members) == 0 {
 		manifest = company.DefaultManifest()
 	}
@@ -1939,7 +2311,7 @@ func defaultOfficeMemberSlugs() []string {
 
 func defaultTeamChannels() []teamChannel {
 	now := time.Now().UTC().Format(time.RFC3339)
-	manifest, err := company.LoadManifest()
+	manifest, err := company.LoadRuntimeManifest(repoRootForRuntimeDefaults())
 	if err != nil || len(manifest.Channels) == 0 {
 		manifest = company.DefaultManifest()
 	}
@@ -1967,6 +2339,13 @@ func defaultTeamChannels() []teamChannel {
 		channels = append(channels, tc)
 	}
 	return channels
+}
+
+func repoRootForRuntimeDefaults() string {
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return "."
 }
 
 func isDefaultChannelState(channels []teamChannel) bool {
@@ -2003,6 +2382,7 @@ func isDefaultOfficeMemberState(members []officeMember) bool {
 
 func normalizeChannelSlug(slug string) string {
 	slug = strings.ToLower(strings.TrimSpace(slug))
+	slug = strings.TrimLeft(slug, "#")
 	slug = strings.ReplaceAll(slug, " ", "-")
 	// Preserve "__" (DM slug separator) before replacing single underscores.
 	const placeholder = "\x00"
@@ -2177,7 +2557,10 @@ func (b *Broker) normalizeLoadedStateLocked() {
 			b.tasks[i].Channel = "general"
 		}
 		normalizeTaskPlan(&b.tasks[i])
+		b.ensureTaskOwnerChannelMembershipLocked(b.tasks[i].Channel, b.tasks[i].Owner)
+		b.queueTaskBehindActiveOwnerLaneLocked(&b.tasks[i])
 		b.scheduleTaskLifecycleLocked(&b.tasks[i])
+		_ = b.syncTaskWorktreeLocked(&b.tasks[i])
 	}
 	b.pendingInterview = firstBlockingRequest(b.requests)
 }
@@ -2806,6 +3189,34 @@ func (b *Broker) enabledChannelMembersLocked(channel string, candidates []string
 		}
 	}
 	return out
+}
+
+func (b *Broker) ensureTaskOwnerChannelMembershipLocked(channel, owner string) {
+	channel = normalizeChannelSlug(channel)
+	owner = normalizeChannelSlug(owner)
+	if channel == "" || owner == "" {
+		return
+	}
+	if b.findMemberLocked(owner) == nil {
+		return
+	}
+	ch := b.findChannelLocked(channel)
+	if ch == nil {
+		return
+	}
+	if !containsString(ch.Members, owner) {
+		ch.Members = uniqueSlugs(append(ch.Members, owner))
+		ch.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if len(ch.Disabled) > 0 {
+		filtered := ch.Disabled[:0]
+		for _, disabled := range ch.Disabled {
+			if disabled != owner {
+				filtered = append(filtered, disabled)
+			}
+		}
+		ch.Disabled = filtered
+	}
 }
 
 func usageStateIsZero(state teamUsageState) bool {
@@ -3514,6 +3925,753 @@ func (b *Broker) handleActions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type studioGeneratedPackage map[string]map[string]any
+
+type studioGeneratedArtifact struct {
+	Kind  string         `json:"kind"`
+	Title string         `json:"title,omitempty"`
+	Data  map[string]any `json:"data,omitempty"`
+}
+
+type studioStubExecution struct {
+	ID           string         `json:"id"`
+	Provider     string         `json:"provider"`
+	WorkflowKey  string         `json:"workflow_key"`
+	Status       string         `json:"status"`
+	Mode         string         `json:"mode"`
+	Integrations []string       `json:"integrations,omitempty"`
+	Summary      string         `json:"summary"`
+	Input        map[string]any `json:"input,omitempty"`
+	Output       map[string]any `json:"output,omitempty"`
+}
+
+func decodeStudioGeneratedPackage(raw string, requiredArtifacts []string) (studioGeneratedPackage, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("empty codex response")
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 3 && strings.HasPrefix(strings.TrimSpace(lines[0]), "```") {
+			lines = lines[1:]
+			if last := len(lines) - 1; last >= 0 && strings.HasPrefix(strings.TrimSpace(lines[last]), "```") {
+				lines = lines[:last]
+			}
+			trimmed = strings.TrimSpace(strings.Join(lines, "\n"))
+		}
+	}
+	start := strings.Index(trimmed, "{")
+	end := strings.LastIndex(trimmed, "}")
+	if start >= 0 && end >= start {
+		trimmed = trimmed[start : end+1]
+	}
+	var pkg studioGeneratedPackage
+	if err := json.Unmarshal([]byte(trimmed), &pkg); err != nil {
+		return nil, err
+	}
+	for _, artifactID := range requiredArtifacts {
+		if len(pkg[artifactID]) == 0 {
+			return nil, fmt.Errorf("missing required artifact %q", artifactID)
+		}
+	}
+	return pkg, nil
+}
+
+func buildStudioFollowUpStubExecutions(runTitle string, offers []any, pkg studioGeneratedPackage) []studioStubExecution {
+	offerNames := extractStudioOfferNames(offers)
+	artifactIDs := studioPackageArtifactIDs(pkg)
+	primaryArtifactID, primaryArtifact := studioPrimaryPackageArtifact(pkg, artifactIDs)
+	primarySummary := firstStudioString(
+		primaryArtifact["summary"],
+		primaryArtifact["objective"],
+		primaryArtifact["title"],
+		primaryArtifact["name"],
+		runTitle,
+	)
+	return []studioStubExecution{
+		{
+			ID:           fmt.Sprintf("followup-review-%d", time.Now().UTC().UnixNano()),
+			Provider:     "one",
+			WorkflowKey:  "artifact-review-sync",
+			Status:       "success",
+			Mode:         "dry_run",
+			Integrations: []string{"artifact-review"},
+			Summary:      fmt.Sprintf("Prepared a review sync payload for %s.", runTitle),
+			Input: map[string]any{
+				"run_title":        runTitle,
+				"artifact_ids":     artifactIDs,
+				"primary_artifact": primaryArtifactID,
+			},
+			Output: map[string]any{
+				"destination":  "review queue",
+				"draft_status": "ready_for_review",
+			},
+		},
+		{
+			ID:           fmt.Sprintf("followup-offers-%d", time.Now().UTC().UnixNano()+1),
+			Provider:     "one",
+			WorkflowKey:  "offer-alignment-check",
+			Status:       "success",
+			Mode:         "dry_run",
+			Integrations: []string{"offer-alignment"},
+			Summary:      fmt.Sprintf("Prepared offer alignment notes for %s.", runTitle),
+			Input: map[string]any{
+				"run_title":    runTitle,
+				"offer_names":  offerNames,
+				"artifact_ids": artifactIDs,
+			},
+			Output: map[string]any{
+				"destination":  "offer queue",
+				"draft_status": "ready_for_review",
+			},
+		},
+		{
+			ID:           fmt.Sprintf("followup-approval-%d", time.Now().UTC().UnixNano()+2),
+			Provider:     "one",
+			WorkflowKey:  "approval-gate-review",
+			Status:       "success",
+			Mode:         "dry_run",
+			Integrations: []string{"approval-gates"},
+			Summary:      fmt.Sprintf("Prepared approval gates for %s.", runTitle),
+			Input: map[string]any{
+				"run_title":        runTitle,
+				"primary_artifact": primaryArtifactID,
+				"primary_summary":  primarySummary,
+			},
+			Output: map[string]any{
+				"destination":  "approval queue",
+				"draft_status": "ready_for_review",
+			},
+		},
+	}
+}
+
+func studioDefaultArtifactDefinitions() []operations.ArtifactType {
+	return []operations.ArtifactType{
+		{ID: "objective_brief", Name: "Objective brief", Description: "Problem statement, constraints, and desired outcome for one run."},
+		{ID: "execution_packet", Name: "Execution packet", Description: "Checklist, dependencies, outputs, and handoff details for one run."},
+		{ID: "approval_checklist", Name: "Approval checklist", Description: "Review gates and required human approvals before live action."},
+	}
+}
+
+func studioNormalizeArtifactDefinitions(defs []operations.ArtifactType) []operations.ArtifactType {
+	normalized := make([]operations.ArtifactType, 0, len(defs))
+	seen := make(map[string]struct{}, len(defs))
+	for _, def := range defs {
+		def.ID = strings.TrimSpace(def.ID)
+		if def.ID == "" {
+			continue
+		}
+		if _, ok := seen[def.ID]; ok {
+			continue
+		}
+		seen[def.ID] = struct{}{}
+		normalized = append(normalized, def)
+	}
+	if len(normalized) == 0 {
+		return studioDefaultArtifactDefinitions()
+	}
+	return normalized
+}
+
+func studioArtifactIDs(defs []operations.ArtifactType) []string {
+	ids := make([]string, 0, len(defs))
+	for _, def := range defs {
+		ids = append(ids, def.ID)
+	}
+	return ids
+}
+
+func buildStudioGeneratedArtifacts(runTitle string, pkg studioGeneratedPackage, defs []operations.ArtifactType) []studioGeneratedArtifact {
+	artifacts := make([]studioGeneratedArtifact, 0, len(defs))
+	for _, def := range studioNormalizeArtifactDefinitions(defs) {
+		artifacts = append(artifacts, studioGeneratedArtifact{
+			Kind:  def.ID,
+			Title: runTitle,
+			Data:  pkg[def.ID],
+		})
+	}
+	return artifacts
+}
+
+func extractStudioOfferNames(offers []any) []string {
+	names := make([]string, 0, len(offers))
+	for _, item := range offers {
+		record, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(fmt.Sprintf("%v", record["name"]))
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+func extractStudioStringSlice(raw any) []string {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		text := strings.TrimSpace(fmt.Sprintf("%v", item))
+		if text == "" || text == "<nil>" {
+			continue
+		}
+		values = append(values, text)
+	}
+	return values
+}
+
+func firstStudioString(values ...any) string {
+	for _, value := range values {
+		text := strings.TrimSpace(fmt.Sprintf("%v", value))
+		if text != "" && text != "<nil>" {
+			return text
+		}
+	}
+	return ""
+}
+
+func (b *Broker) handleStudioGeneratePackage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Channel   string                    `json:"channel"`
+		Actor     string                    `json:"actor"`
+		Workspace map[string]any            `json:"workspace"`
+		Run       map[string]any            `json:"run"`
+		Offers    []any                     `json:"offers"`
+		Artifacts []operations.ArtifactType `json:"artifacts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	channel := normalizeChannelSlug(body.Channel)
+	if channel == "" {
+		channel = "general"
+	}
+	actor := strings.TrimSpace(body.Actor)
+	if actor == "" {
+		actor = "human"
+	}
+	runTitle := strings.TrimSpace(fmt.Sprintf("%v", body.Run["title"]))
+	if runTitle == "" {
+		http.Error(w, "run.title required", http.StatusBadRequest)
+		return
+	}
+
+	artifactDefs := studioNormalizeArtifactDefinitions(body.Artifacts)
+	systemPrompt := strings.TrimSpace(`You generate structured operation artifacts for a reusable workflow.
+Return valid JSON only. No markdown fences. No prose outside JSON.
+The top-level object must contain exactly:
+` + strings.Join(func() []string {
+		items := make([]string, 0, len(artifactDefs))
+		for _, def := range artifactDefs {
+			items = append(items, "- "+def.ID)
+		}
+		return items
+	}(), "\n"))
+
+	promptPayload, _ := json.Marshal(map[string]any{
+		"workspace": body.Workspace,
+		"run":       body.Run,
+		"offers":    body.Offers,
+		"artifacts": artifactDefs,
+	})
+	prompt := strings.TrimSpace(`Turn this run into a production-ready artifact bundle for the active operation.
+
+Rules:
+- Keep claims concrete and production-safe.
+- Use short, scannable fields.
+- For each requested artifact, use the provided id, name, and description to shape the object.
+- Prefer compact objects with fields like summary, goals, checklist, dependencies, outputs, risks, approvals, notes, links, or tags when they fit the artifact purpose.
+- Only return the requested artifact ids as top-level keys.
+
+Input JSON:
+` + string(promptPayload))
+
+	raw, err := studioPackageGenerator(systemPrompt, prompt, "")
+	if err != nil {
+		http.Error(w, "package generation failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	pkg, err := decodeStudioGeneratedPackage(raw, studioArtifactIDs(artifactDefs))
+	if err != nil {
+		http.Error(w, "invalid codex package output: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	stubExecutions := buildStudioFollowUpStubExecutions(runTitle, body.Offers, pkg)
+	artifacts := buildStudioGeneratedArtifacts(runTitle, pkg, artifactDefs)
+	summary := truncateSummary("Generated operation artifacts for "+runTitle, 140)
+	if err := b.RecordAction("studio_package_generated", "studio", channel, actor, summary, runTitle, nil, ""); err != nil {
+		http.Error(w, "failed to persist action", http.StatusInternalServerError)
+		return
+	}
+	for _, execution := range stubExecutions {
+		if err := b.RecordAction("studio_followup_stub_executed", "studio", channel, actor, truncateSummary(execution.Summary, 140), runTitle, nil, ""); err != nil {
+			http.Error(w, "failed to persist follow-up stub action", http.StatusInternalServerError)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":              true,
+		"package":         pkg,
+		"artifacts":       artifacts,
+		"stub_executions": stubExecutions,
+	})
+}
+
+func studioPackageArtifactIDs(pkg studioGeneratedPackage) []string {
+	ids := make([]string, 0, len(pkg))
+	for id := range pkg {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func studioPrimaryPackageArtifact(pkg studioGeneratedPackage, artifactIDs []string) (string, map[string]any) {
+	for _, id := range artifactIDs {
+		if item, ok := pkg[id]; ok && len(item) > 0 {
+			return id, item
+		}
+	}
+	for id, item := range pkg {
+		if len(item) > 0 {
+			return strings.TrimSpace(id), item
+		}
+	}
+	return "", map[string]any{}
+}
+
+func normalizeStudioWorkflowDefinition(raw json.RawMessage) ([]byte, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var encoded string
+		if err := json.Unmarshal(trimmed, &encoded); err != nil {
+			return nil, err
+		}
+		trimmed = []byte(strings.TrimSpace(encoded))
+	}
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	return trimmed, nil
+}
+
+func studioWorkflowHints(definition []byte) (dryRun bool, mock bool, integrations []string) {
+	var parsed struct {
+		Steps []map[string]any `json:"steps"`
+	}
+	if err := json.Unmarshal(definition, &parsed); err != nil {
+		return false, false, nil
+	}
+	seen := make(map[string]struct{})
+	for _, step := range parsed.Steps {
+		if v, ok := step["dry_run"].(bool); ok && v {
+			dryRun = true
+		}
+		if v, ok := step["mock"].(bool); ok && v {
+			mock = true
+		}
+		platform := strings.TrimSpace(fmt.Sprintf("%v", step["platform"]))
+		if platform == "" || platform == "<nil>" {
+			continue
+		}
+		if _, exists := seen[platform]; exists {
+			continue
+		}
+		seen[platform] = struct{}{}
+		integrations = append(integrations, platform)
+	}
+	return dryRun, mock, integrations
+}
+
+func workflowCreateConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "already exists") ||
+		strings.Contains(text, "duplicate") ||
+		strings.Contains(text, "conflict")
+}
+
+func uniqueStrings(values ...[]string) []string {
+	var out []string
+	seen := make(map[string]struct{})
+	for _, group := range values {
+		for _, value := range group {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if _, exists := seen[value]; exists {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func workflowRunModeLabel(dryRun, mock bool) string {
+	switch {
+	case dryRun && mock:
+		return "dry-run + mock"
+	case dryRun:
+		return "dry-run"
+	case mock:
+		return "mock"
+	default:
+		return "live"
+	}
+}
+
+func mustMarshalStudioJSON(value any) json.RawMessage {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(`{"error":"marshal_failed"}`)
+	}
+	return json.RawMessage(data)
+}
+
+func executeStudioWorkflowStub(workflowKey string, definition []byte, inputs map[string]any, dryRun, mock bool) (action.WorkflowExecuteResult, error) {
+	var parsed struct {
+		Steps []map[string]any `json:"steps"`
+	}
+	if err := json.Unmarshal(definition, &parsed); err != nil {
+		return action.WorkflowExecuteResult{}, err
+	}
+	now := time.Now().UTC()
+	runID := fmt.Sprintf("studiowf_%d", now.UnixNano())
+	stepLogs := make(map[string]json.RawMessage, len(parsed.Steps))
+	events := make([]json.RawMessage, 0, len(parsed.Steps)+2)
+	events = append(events, mustMarshalStudioJSON(map[string]any{
+		"event":        "workflow_started",
+		"provider":     "studio_stub",
+		"workflow_key": workflowKey,
+		"run_id":       runID,
+	}))
+	status := "success"
+	for i, step := range parsed.Steps {
+		stepID := strings.TrimSpace(fmt.Sprintf("%v", step["id"]))
+		if stepID == "" {
+			stepID = fmt.Sprintf("step-%d", i+1)
+		}
+		stepType := strings.TrimSpace(fmt.Sprintf("%v", step["kind"]))
+		if stepType == "" || stepType == "<nil>" {
+			stepType = strings.TrimSpace(fmt.Sprintf("%v", step["type"]))
+		}
+		if stepType == "" || stepType == "<nil>" {
+			stepType = "action"
+		}
+		stepStatus := "completed"
+		if dryRun {
+			stepStatus = "planned"
+		}
+		if mock {
+			stepStatus = "mocked"
+		}
+		payload := map[string]any{
+			"id":       stepID,
+			"type":     stepType,
+			"status":   stepStatus,
+			"platform": strings.TrimSpace(fmt.Sprintf("%v", step["platform"])),
+			"action":   strings.TrimSpace(fmt.Sprintf("%v", step["action"])),
+			"inputs":   inputs,
+		}
+		stepLogs[stepID] = mustMarshalStudioJSON(payload)
+		events = append(events, mustMarshalStudioJSON(map[string]any{
+			"event":   "workflow_step_completed",
+			"step_id": stepID,
+			"type":    stepType,
+			"status":  stepStatus,
+		}))
+	}
+	events = append(events, mustMarshalStudioJSON(map[string]any{
+		"event":  "workflow_finished",
+		"run_id": runID,
+		"status": status,
+	}))
+	return action.WorkflowExecuteResult{
+		RunID:  runID,
+		Status: status,
+		Steps:  stepLogs,
+		Events: events,
+	}, nil
+}
+
+func (b *Broker) recordStudioWorkflowExecution(channel, actor, skillName, workflowKey, providerName, title, status string, when time.Time) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var skill *teamSkill
+	if strings.TrimSpace(skillName) != "" {
+		skill = b.findSkillByNameLocked(skillName)
+	}
+	if skill == nil && strings.TrimSpace(workflowKey) != "" {
+		skill = b.findSkillByWorkflowKeyLocked(workflowKey)
+	}
+	if skill != nil {
+		skill.UsageCount++
+		skill.LastExecutionStatus = strings.TrimSpace(status)
+		skill.LastExecutionAt = when.UTC().Format(time.RFC3339)
+		skill.UpdatedAt = when.UTC().Format(time.RFC3339)
+		if strings.TrimSpace(title) == "" {
+			title = skill.Title
+		}
+	}
+	if strings.TrimSpace(title) == "" {
+		title = workflowKey
+	}
+	b.counter++
+	b.appendMessageLocked(channelMessage{
+		ID:        fmt.Sprintf("msg-%d", b.counter),
+		From:      actor,
+		Channel:   channel,
+		Kind:      "skill_invocation",
+		Title:     title,
+		Content:   fmt.Sprintf("Workflow %q executed via %s (%s)", workflowKey, providerName, status),
+		Timestamp: when.UTC().Format(time.RFC3339),
+	})
+	return b.saveLocked()
+}
+
+func (b *Broker) handleStudioRunWorkflow(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Channel            string          `json:"channel"`
+		Actor              string          `json:"actor"`
+		SkillName          string          `json:"skill_name"`
+		WorkflowKey        string          `json:"workflow_key"`
+		WorkflowProvider   string          `json:"workflow_provider"`
+		WorkflowDefinition json.RawMessage `json:"workflow_definition"`
+		Inputs             map[string]any  `json:"inputs"`
+		DryRun             *bool           `json:"dry_run"`
+		Mock               *bool           `json:"mock"`
+		AllowBash          bool            `json:"allow_bash"`
+		Integrations       []string        `json:"integrations"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	channel := normalizeChannelSlug(body.Channel)
+	if channel == "" {
+		channel = "general"
+	}
+	actor := strings.TrimSpace(body.Actor)
+	if actor == "" {
+		actor = "human"
+	}
+
+	var (
+		skillName          = strings.TrimSpace(body.SkillName)
+		workflowKey        = strings.TrimSpace(body.WorkflowKey)
+		workflowProvider   = strings.TrimSpace(body.WorkflowProvider)
+		workflowDefinition []byte
+		title              string
+	)
+	definition, err := normalizeStudioWorkflowDefinition(body.WorkflowDefinition)
+	if err != nil {
+		http.Error(w, "invalid workflow_definition: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	workflowDefinition = definition
+
+	b.mu.Lock()
+	if skillName != "" || workflowKey != "" {
+		var skill *teamSkill
+		if skillName != "" {
+			skill = b.findSkillByNameLocked(skillName)
+		}
+		if skill == nil && workflowKey != "" {
+			skill = b.findSkillByWorkflowKeyLocked(workflowKey)
+		}
+		if skill != nil {
+			if skillName == "" {
+				skillName = strings.TrimSpace(skill.Name)
+			}
+			if workflowKey == "" {
+				workflowKey = strings.TrimSpace(skill.WorkflowKey)
+			}
+			if workflowProvider == "" {
+				workflowProvider = strings.TrimSpace(skill.WorkflowProvider)
+			}
+			if len(workflowDefinition) == 0 {
+				workflowDefinition = []byte(strings.TrimSpace(skill.WorkflowDefinition))
+			}
+			title = strings.TrimSpace(skill.Title)
+		}
+	}
+	b.mu.Unlock()
+
+	if workflowKey == "" {
+		http.Error(w, "workflow_key required", http.StatusBadRequest)
+		return
+	}
+	if workflowProvider == "" {
+		workflowProvider = "one"
+	}
+	if len(workflowDefinition) == 0 {
+		http.Error(w, "workflow_definition required", http.StatusBadRequest)
+		return
+	}
+
+	inferredDryRun, inferredMock, inferredIntegrations := studioWorkflowHints(workflowDefinition)
+	dryRun := inferredDryRun
+	if body.DryRun != nil {
+		dryRun = *body.DryRun
+	}
+	mock := inferredMock
+	if body.Mock != nil {
+		mock = *body.Mock
+	}
+	integrations := uniqueStrings(body.Integrations, inferredIntegrations)
+
+	providerLabel := workflowProvider
+	registry := action.NewRegistryFromEnv()
+	provider, err := registry.ProviderNamed(workflowProvider, action.CapabilityWorkflowExecute)
+	var execution action.WorkflowExecuteResult
+	if err != nil {
+		if dryRun || mock {
+			execution, err = executeStudioWorkflowStub(workflowKey, workflowDefinition, body.Inputs, dryRun, mock)
+			if err != nil {
+				http.Error(w, "workflow stub execution failed: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+		} else {
+			http.Error(w, "workflow provider unavailable: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+	} else {
+		providerLabel = provider.Name()
+		if provider.Supports(action.CapabilityWorkflowCreate) {
+			if _, err := provider.CreateWorkflow(r.Context(), action.WorkflowCreateRequest{
+				Key:        workflowKey,
+				Definition: workflowDefinition,
+			}); err != nil && !workflowCreateConflict(err) {
+				if dryRun || mock {
+					execution, err = executeStudioWorkflowStub(workflowKey, workflowDefinition, body.Inputs, dryRun, mock)
+					if err != nil {
+						http.Error(w, "workflow stub execution failed: "+err.Error(), http.StatusBadGateway)
+						return
+					}
+				} else {
+					http.Error(w, "workflow registration failed: "+err.Error(), http.StatusBadGateway)
+					return
+				}
+			}
+		}
+		if execution.RunID == "" {
+			execution, err = provider.ExecuteWorkflow(r.Context(), action.WorkflowExecuteRequest{
+				KeyOrPath: workflowKey,
+				Inputs:    body.Inputs,
+				DryRun:    dryRun,
+				Mock:      mock,
+				AllowBash: body.AllowBash,
+			})
+			if err != nil {
+				if dryRun || mock {
+					execution, err = executeStudioWorkflowStub(workflowKey, workflowDefinition, body.Inputs, dryRun, mock)
+					if err != nil {
+						http.Error(w, "workflow stub execution failed: "+err.Error(), http.StatusBadGateway)
+						return
+					}
+				} else {
+					now := time.Now().UTC()
+					mode := workflowRunModeLabel(dryRun, mock)
+					retryAt, rateLimited := externalWorkflowRetryAfter(err, now)
+					failKind := "external_workflow_failed"
+					failStatus := "failed"
+					failSummary := truncateSummary(fmt.Sprintf("Studio workflow %s failed via %s (%s)", workflowKey, strings.Title(providerLabel), mode), 140)
+					if rateLimited {
+						failKind = "external_workflow_rate_limited"
+						failStatus = "rate_limited"
+						failSummary = truncateSummary(fmt.Sprintf("Studio workflow %s rate-limited via %s (%s)", workflowKey, strings.Title(providerLabel), mode), 140)
+						retryDelay := time.Until(retryAt)
+						if retryDelay < time.Second {
+							retryDelay = time.Second
+						}
+						w.Header().Set("Retry-After", strconv.Itoa(int((retryDelay+time.Second-1)/time.Second)))
+					}
+					_ = b.RecordAction(failKind, providerLabel, channel, actor, failSummary, workflowKey, nil, "")
+					_ = b.UpdateSkillExecutionByWorkflowKey(workflowKey, failStatus, now)
+					if rateLimited {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusTooManyRequests)
+						_ = json.NewEncoder(w).Encode(map[string]any{
+							"ok":           false,
+							"workflow_key": workflowKey,
+							"provider":     providerLabel,
+							"status":       "rate_limited",
+							"error":        err.Error(),
+							"retry_after":  retryAt.UTC().Format(time.RFC3339Nano),
+						})
+						return
+					}
+					http.Error(w, "workflow execution failed: "+err.Error(), http.StatusBadGateway)
+					return
+				}
+			}
+		}
+	}
+	now := time.Now().UTC()
+	mode := workflowRunModeLabel(dryRun, mock)
+	status := strings.TrimSpace(execution.Status)
+	if status == "" {
+		status = "completed"
+	}
+	summary := truncateSummary(fmt.Sprintf("Studio workflow %s ran via %s (%s)", workflowKey, strings.Title(providerLabel), mode), 140)
+	if err := b.RecordAction("external_workflow_executed", providerLabel, channel, actor, summary, workflowKey, nil, ""); err != nil {
+		http.Error(w, "failed to record workflow action", http.StatusInternalServerError)
+		return
+	}
+	if err := b.recordStudioWorkflowExecution(channel, actor, skillName, workflowKey, providerLabel, title, status, now); err != nil {
+		http.Error(w, "failed to persist workflow execution", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":           true,
+		"skill_name":   skillName,
+		"workflow_key": workflowKey,
+		"provider":     providerLabel,
+		"mode":         mode,
+		"status":       status,
+		"integrations": integrations,
+		"execution": map[string]any{
+			"run_id":   execution.RunID,
+			"log_file": execution.LogFile,
+			"status":   status,
+			"steps":    execution.Steps,
+			"events":   execution.Events,
+		},
+	})
+}
+
 func (b *Broker) handleScheduler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -4130,6 +5288,22 @@ func (b *Broker) handleChannels(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC().Format(time.RFC3339)
 		b.mu.Lock()
 		defer b.mu.Unlock()
+		validateMembers := func(members []string) ([]string, string) {
+			members = uniqueSlugs(members)
+			if len(members) == 0 {
+				return nil, ""
+			}
+			validated := make([]string, 0, len(members))
+			var missing []string
+			for _, member := range members {
+				if b.findMemberLocked(member) == nil {
+					missing = append(missing, member)
+					continue
+				}
+				validated = append(validated, member)
+			}
+			return validated, strings.Join(missing, ", ")
+		}
 		switch action {
 		case "create":
 			if slug == "" {
@@ -4140,22 +5314,10 @@ func (b *Broker) handleChannels(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "channel already exists", http.StatusConflict)
 				return
 			}
-			members := uniqueSlugs(body.Members)
-			if len(members) > 0 {
-				validated := make([]string, 0, len(members))
-				var missing []string
-				for _, member := range members {
-					if b.findMemberLocked(member) == nil {
-						missing = append(missing, member)
-						continue
-					}
-					validated = append(validated, member)
-				}
-				if len(missing) > 0 {
-					http.Error(w, "unknown members: "+strings.Join(missing, ", "), http.StatusNotFound)
-					return
-				}
-				members = validated
+			members, missing := validateMembers(body.Members)
+			if missing != "" {
+				http.Error(w, "unknown members: "+missing, http.StatusNotFound)
+				return
 			}
 			members = append([]string{"ceo"}, members...)
 			if creator := normalizeChannelSlug(body.CreatedBy); creator != "" && creator != "ceo" && b.findMemberLocked(creator) != nil {
@@ -4183,6 +5345,50 @@ func (b *Broker) handleChannels(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			b.publishOfficeChangeLocked(officeChangeEvent{Kind: "channel_created", Slug: slug})
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"channel": ch})
+		case "update":
+			if slug == "" {
+				http.Error(w, "slug required", http.StatusBadRequest)
+				return
+			}
+			ch := b.findChannelLocked(slug)
+			if ch == nil {
+				http.Error(w, "channel not found", http.StatusNotFound)
+				return
+			}
+			if name := strings.TrimSpace(body.Name); name != "" {
+				ch.Name = name
+			}
+			if description := strings.TrimSpace(body.Description); description != "" {
+				ch.Description = description
+			}
+			if body.Surface != nil {
+				ch.Surface = body.Surface
+			}
+			if body.Members != nil {
+				members, missing := validateMembers(body.Members)
+				if missing != "" {
+					http.Error(w, "unknown members: "+missing, http.StatusNotFound)
+					return
+				}
+				ch.Members = uniqueSlugs(append([]string{"ceo"}, members...))
+				if len(ch.Disabled) > 0 {
+					filtered := make([]string, 0, len(ch.Disabled))
+					for _, disabled := range ch.Disabled {
+						if !containsString(ch.Members, disabled) {
+							filtered = append(filtered, disabled)
+						}
+					}
+					ch.Disabled = filtered
+				}
+			}
+			ch.UpdatedAt = now
+			if err := b.saveLocked(); err != nil {
+				http.Error(w, "failed to persist broker state", http.StatusInternalServerError)
+				return
+			}
+			b.publishOfficeChangeLocked(officeChangeEvent{Kind: "channel_updated", Slug: slug})
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{"channel": ch})
 		case "remove":
@@ -4654,7 +5860,7 @@ func (b *Broker) attachUsageToRecentMessagesLocked(event usageEvent) {
 	}
 }
 
-// RecordAgentUsage records token usage from a Claude stream result for a given agent.
+// RecordAgentUsage records token usage from a provider stream result for a given agent.
 func (b *Broker) RecordAgentUsage(slug, model string, usage provider.ClaudeUsage) {
 	event := usageEvent{
 		AgentSlug:           slug,
@@ -4812,6 +6018,17 @@ func (b *Broker) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tagged := uniqueSlugs(body.Tagged)
+	for _, taggedSlug := range tagged {
+		switch taggedSlug {
+		case "you", "human", "system":
+			continue
+		}
+		if b.findMemberLocked(taggedSlug) == nil {
+			b.mu.Unlock()
+			http.Error(w, "unknown tagged member", http.StatusBadRequest)
+			return
+		}
+	}
 
 	// Thread auto-tagging: when a HUMAN replies in a thread, notify all
 	// other agents who have already participated. This keeps the team
@@ -4828,7 +6045,7 @@ func (b *Broker) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 			inThread := existing.ID == threadRoot || existing.ReplyTo == threadRoot
 			if inThread && existing.From != body.From {
 				// Include agents (skip "you"/"human" — they see via the web UI poll)
-				if existing.From != "you" && existing.From != "human" {
+				if existing.From != "you" && existing.From != "human" && b.findMemberLocked(existing.From) != nil {
 					threadParticipants = append(threadParticipants, existing.From)
 				}
 			}
@@ -5672,7 +6889,15 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "title and created_by required", http.StatusBadRequest)
 			return
 		}
-		if existing := b.findReusableTaskLocked(channel, strings.TrimSpace(body.Title), strings.TrimSpace(body.ThreadID), strings.TrimSpace(body.Owner)); existing != nil {
+		if existing := b.findReusableTaskLocked(taskReuseMatch{
+			Channel:          channel,
+			Title:            strings.TrimSpace(body.Title),
+			ThreadID:         strings.TrimSpace(body.ThreadID),
+			Owner:            strings.TrimSpace(body.Owner),
+			PipelineID:       strings.TrimSpace(body.PipelineID),
+			SourceSignalID:   strings.TrimSpace(body.SourceSignalID),
+			SourceDecisionID: strings.TrimSpace(body.SourceDecisionID),
+		}); existing != nil {
 			if details := strings.TrimSpace(body.Details); details != "" {
 				existing.Details = details
 			}
@@ -5707,6 +6932,7 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 			if existing.ThreadID == "" && strings.TrimSpace(body.ThreadID) != "" {
 				existing.ThreadID = strings.TrimSpace(body.ThreadID)
 			}
+			b.ensureTaskOwnerChannelMembershipLocked(channel, existing.Owner)
 			existing.UpdatedAt = now
 			b.scheduleTaskLifecycleLocked(existing)
 			if err := b.syncTaskWorktreeLocked(existing); err != nil {
@@ -5749,6 +6975,12 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 		} else if task.Owner != "" {
 			task.Status = "in_progress"
 		}
+		b.ensureTaskOwnerChannelMembershipLocked(channel, task.Owner)
+		b.queueTaskBehindActiveOwnerLaneLocked(&task)
+		if err := rejectTheaterTaskForLiveBusiness(&task); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		b.scheduleTaskLifecycleLocked(&task)
 		if err := b.syncTaskWorktreeLocked(&task); err != nil {
 			http.Error(w, "failed to manage task worktree", http.StatusInternalServerError)
@@ -5765,14 +6997,13 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	requestedID := strings.TrimSpace(body.ID)
 	for i := range b.tasks {
-		if b.tasks[i].ID != strings.TrimSpace(body.ID) {
-			continue
-		}
-		if normalizeChannelSlug(b.tasks[i].Channel) != channel {
+		if b.tasks[i].ID != requestedID {
 			continue
 		}
 		task := &b.tasks[i]
+		taskChannel := normalizeChannelSlug(task.Channel)
 		switch action {
 		case "claim", "assign":
 			if strings.TrimSpace(body.Owner) == "" {
@@ -5781,11 +7012,25 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 			}
 			task.Owner = strings.TrimSpace(body.Owner)
 			task.Status = "in_progress"
-			if taskNeedsStructuredReview(task) && strings.TrimSpace(task.ReviewState) == "" {
+			if taskNeedsStructuredReview(task) {
 				task.ReviewState = "pending_review"
+			} else {
+				task.ReviewState = "not_required"
 			}
 		case "complete":
-			if taskNeedsStructuredReview(task) {
+			if strings.EqualFold(strings.TrimSpace(task.Status), "done") {
+				if taskNeedsStructuredReview(task) {
+					task.ReviewState = "approved"
+				}
+				task.Blocked = false
+			} else if strings.EqualFold(strings.TrimSpace(task.Status), "review") ||
+				strings.EqualFold(strings.TrimSpace(task.ReviewState), "ready_for_review") {
+				task.Status = "done"
+				if taskNeedsStructuredReview(task) {
+					task.ReviewState = "approved"
+				}
+				task.Blocked = false
+			} else if taskNeedsStructuredReview(task) {
 				task.Status = "review"
 				task.ReviewState = "ready_for_review"
 			} else {
@@ -5800,10 +7045,16 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 				task.ReviewState = "approved"
 			}
 		case "block":
+			if err := rejectFalseLocalWorktreeBlock(task, body.Details); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 			task.Status = "blocked"
+			task.Blocked = true
 		case "release":
 			task.Owner = ""
 			task.Status = "open"
+			task.Blocked = false
 		default:
 			http.Error(w, "unknown action", http.StatusBadRequest)
 			return
@@ -5835,7 +7086,13 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 		if worktreeBranch := strings.TrimSpace(body.WorktreeBranch); worktreeBranch != "" {
 			task.WorktreeBranch = worktreeBranch
 		}
+		b.ensureTaskOwnerChannelMembershipLocked(taskChannel, task.Owner)
+		b.queueTaskBehindActiveOwnerLaneLocked(task)
 		task.UpdatedAt = now
+		if err := rejectTheaterTaskForLiveBusiness(task); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if task.Status == "done" {
 			b.unblockDependentsLocked(task.ID)
 		}
@@ -5844,7 +7101,7 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to manage task worktree", http.StatusInternalServerError)
 			return
 		}
-		b.appendActionLocked("task_updated", "office", channel, strings.TrimSpace(body.CreatedBy), truncateSummary(task.Title+" ["+task.Status+"]", 140), task.ID)
+		b.appendActionLocked("task_updated", "office", taskChannel, strings.TrimSpace(body.CreatedBy), truncateSummary(task.Title+" ["+task.Status+"]", 140), task.ID)
 		if err := b.saveLocked(); err != nil {
 			http.Error(w, "failed to persist broker state", http.StatusInternalServerError)
 			return
@@ -5857,6 +7114,121 @@ func (b *Broker) handlePostTask(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "task not found", http.StatusNotFound)
 }
 
+func (b *Broker) BlockTask(taskID, actor, reason string) (teamTask, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	id := strings.TrimSpace(taskID)
+	if id == "" {
+		return teamTask{}, false, fmt.Errorf("task id required")
+	}
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "system"
+	}
+	reason = strings.TrimSpace(reason)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	for i := range b.tasks {
+		task := &b.tasks[i]
+		if task.ID != id {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(task.Status))
+		if status == "done" || status == "completed" || status == "canceled" || status == "cancelled" {
+			return *task, false, nil
+		}
+		if err := rejectFalseLocalWorktreeBlock(task, reason); err != nil {
+			return *task, false, err
+		}
+		if reason != "" {
+			switch existing := strings.TrimSpace(task.Details); {
+			case existing == "":
+				task.Details = reason
+			case !strings.Contains(existing, reason):
+				task.Details = existing + "\n\n" + reason
+			}
+		}
+		task.Status = "blocked"
+		task.Blocked = true
+		task.UpdatedAt = now
+		if err := rejectTheaterTaskForLiveBusiness(task); err != nil {
+			return *task, false, err
+		}
+		b.scheduleTaskLifecycleLocked(task)
+		if err := b.syncTaskWorktreeLocked(task); err != nil {
+			return teamTask{}, false, err
+		}
+		b.appendActionLocked("task_updated", "office", normalizeChannelSlug(task.Channel), actor, truncateSummary(task.Title+" ["+task.Status+"]", 140), task.ID)
+		if err := b.saveLocked(); err != nil {
+			return teamTask{}, false, err
+		}
+		return *task, true, nil
+	}
+
+	return teamTask{}, false, fmt.Errorf("task not found")
+}
+
+func (b *Broker) ResumeTask(taskID, actor, reason string) (teamTask, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	id := strings.TrimSpace(taskID)
+	if id == "" {
+		return teamTask{}, false, fmt.Errorf("task id required")
+	}
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "system"
+	}
+	reason = strings.TrimSpace(reason)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	for i := range b.tasks {
+		task := &b.tasks[i]
+		if task.ID != id {
+			continue
+		}
+		changed := false
+		if task.Blocked {
+			task.Blocked = false
+			changed = true
+		}
+		if strings.EqualFold(strings.TrimSpace(task.Status), "blocked") {
+			if strings.TrimSpace(task.Owner) != "" {
+				task.Status = "in_progress"
+			} else {
+				task.Status = "open"
+			}
+			changed = true
+		}
+		if !changed {
+			return *task, false, nil
+		}
+		if reason != "" && !strings.Contains(task.Details, reason) {
+			task.Details = strings.TrimSpace(task.Details)
+			if task.Details != "" {
+				task.Details += "\n\n"
+			}
+			task.Details += reason
+		}
+		b.ensureTaskOwnerChannelMembershipLocked(task.Channel, task.Owner)
+		b.queueTaskBehindActiveOwnerLaneLocked(task)
+		task.UpdatedAt = now
+		b.scheduleTaskLifecycleLocked(task)
+		if err := b.syncTaskWorktreeLocked(task); err != nil {
+			return teamTask{}, false, err
+		}
+		b.appendActionLocked("task_unblocked", "office", normalizeChannelSlug(task.Channel), actor, truncateSummary(task.Title+" resumed", 140), task.ID)
+		if err := b.saveLocked(); err != nil {
+			return teamTask{}, false, err
+		}
+		return *task, true, nil
+	}
+
+	return teamTask{}, false, fmt.Errorf("task not found")
+}
+
 func (b *Broker) handleTaskPlan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -5866,24 +7238,26 @@ func (b *Broker) handleTaskPlan(w http.ResponseWriter, r *http.Request) {
 		Channel   string `json:"channel"`
 		CreatedBy string `json:"created_by"`
 		Tasks     []struct {
-			Title     string   `json:"title"`
-			Assignee  string   `json:"assignee"`
-			Details   string   `json:"details"`
-			DependsOn []string `json:"depends_on"`
+			Title         string   `json:"title"`
+			Assignee      string   `json:"assignee"`
+			Details       string   `json:"details"`
+			TaskType      string   `json:"task_type"`
+			ExecutionMode string   `json:"execution_mode"`
+			DependsOn     []string `json:"depends_on"`
 		} `json:"tasks"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	channel := normalizeChannelSlug(body.Channel)
-	if channel == "" {
-		channel = "general"
-	}
 	createdBy := strings.TrimSpace(body.CreatedBy)
 	if createdBy == "" || len(body.Tasks) == 0 {
 		http.Error(w, "created_by and tasks required", http.StatusBadRequest)
 		return
+	}
+	channel := normalizeChannelSlug(body.Channel)
+	if channel == "" {
+		channel = "general"
 	}
 
 	b.mu.Lock()
@@ -5899,9 +7273,11 @@ func (b *Broker) handleTaskPlan(w http.ResponseWriter, r *http.Request) {
 	created := make([]teamTask, 0, len(body.Tasks))
 
 	for _, item := range body.Tasks {
-		b.counter++
-		taskID := fmt.Sprintf("task-%d", b.counter)
-		titleToID[strings.TrimSpace(item.Title)] = taskID
+		taskChannel := b.preferredTaskChannelLocked(channel, createdBy, item.Assignee, item.Title, item.Details)
+		if b.findChannelLocked(taskChannel) == nil {
+			http.Error(w, "channel not found", http.StatusNotFound)
+			return
+		}
 
 		// Resolve depends_on: accept both task IDs and titles
 		resolvedDeps := make([]string, 0, len(item.DependsOn))
@@ -5913,18 +7289,63 @@ func (b *Broker) handleTaskPlan(w http.ResponseWriter, r *http.Request) {
 				resolvedDeps = append(resolvedDeps, dep) // assume it's a task ID
 			}
 		}
+		if existing := b.findReusableTaskLocked(taskReuseMatch{
+			Channel: taskChannel,
+			Title:   strings.TrimSpace(item.Title),
+			Owner:   strings.TrimSpace(item.Assignee),
+		}); existing != nil {
+			titleToID[strings.TrimSpace(item.Title)] = existing.ID
+			if details := strings.TrimSpace(item.Details); details != "" {
+				existing.Details = details
+			}
+			if taskType := strings.TrimSpace(item.TaskType); taskType != "" {
+				existing.TaskType = taskType
+			}
+			if executionMode := strings.TrimSpace(item.ExecutionMode); executionMode != "" {
+				existing.ExecutionMode = executionMode
+			}
+			existing.DependsOn = resolvedDeps
+			if len(existing.DependsOn) > 0 && b.hasUnresolvedDepsLocked(existing) {
+				existing.Blocked = true
+				existing.Status = "open"
+			} else if strings.TrimSpace(existing.Owner) != "" {
+				existing.Blocked = false
+				existing.Status = "in_progress"
+			}
+			b.ensureTaskOwnerChannelMembershipLocked(taskChannel, existing.Owner)
+			b.queueTaskBehindActiveOwnerLaneLocked(existing)
+			existing.UpdatedAt = now
+			if err := rejectTheaterTaskForLiveBusiness(existing); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			b.scheduleTaskLifecycleLocked(existing)
+			if err := b.syncTaskWorktreeLocked(existing); err != nil {
+				http.Error(w, "failed to manage task worktree", http.StatusInternalServerError)
+				return
+			}
+			b.appendActionLocked("task_updated", "office", taskChannel, createdBy, truncateSummary(existing.Title+" ["+existing.Status+"]", 140), existing.ID)
+			created = append(created, *existing)
+			continue
+		}
+
+		b.counter++
+		taskID := fmt.Sprintf("task-%d", b.counter)
+		titleToID[strings.TrimSpace(item.Title)] = taskID
 
 		task := teamTask{
-			ID:        taskID,
-			Channel:   channel,
-			Title:     strings.TrimSpace(item.Title),
-			Details:   strings.TrimSpace(item.Details),
-			Owner:     strings.TrimSpace(item.Assignee),
-			Status:    "open",
-			CreatedBy: createdBy,
-			DependsOn: resolvedDeps,
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:            taskID,
+			Channel:       taskChannel,
+			Title:         strings.TrimSpace(item.Title),
+			Details:       strings.TrimSpace(item.Details),
+			Owner:         strings.TrimSpace(item.Assignee),
+			Status:        "open",
+			CreatedBy:     createdBy,
+			TaskType:      strings.TrimSpace(item.TaskType),
+			ExecutionMode: strings.TrimSpace(item.ExecutionMode),
+			DependsOn:     resolvedDeps,
+			CreatedAt:     now,
+			UpdatedAt:     now,
 		}
 		if task.Owner != "" && len(resolvedDeps) == 0 {
 			task.Status = "in_progress"
@@ -5932,9 +7353,19 @@ func (b *Broker) handleTaskPlan(w http.ResponseWriter, r *http.Request) {
 		if len(resolvedDeps) > 0 && b.hasUnresolvedDepsLocked(&task) {
 			task.Blocked = true
 		}
+		b.ensureTaskOwnerChannelMembershipLocked(taskChannel, task.Owner)
+		b.queueTaskBehindActiveOwnerLaneLocked(&task)
+		if err := rejectTheaterTaskForLiveBusiness(&task); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		b.scheduleTaskLifecycleLocked(&task)
+		if err := b.syncTaskWorktreeLocked(&task); err != nil {
+			http.Error(w, "failed to manage task worktree", http.StatusInternalServerError)
+			return
+		}
 		b.tasks = append(b.tasks, task)
-		b.appendActionLocked("task_created", "office", channel, createdBy, truncateSummary(task.Title, 140), task.ID)
+		b.appendActionLocked("task_created", "office", taskChannel, createdBy, truncateSummary(task.Title, 140), task.ID)
 		created = append(created, task)
 	}
 
@@ -6104,10 +7535,7 @@ func (b *Broker) handleTaskAck(w http.ResponseWriter, r *http.Request) {
 func (b *Broker) EnsureTask(channel, title, details, owner, createdBy, threadID string, dependsOn ...string) (teamTask, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	channel = normalizeChannelSlug(channel)
-	if channel == "" {
-		channel = "general"
-	}
+	channel = b.preferredTaskChannelLocked(channel, createdBy, owner, title, details)
 	if b.findChannelLocked(channel) == nil {
 		return teamTask{}, false, fmt.Errorf("channel not found")
 	}
@@ -6115,7 +7543,12 @@ func (b *Broker) EnsureTask(channel, title, details, owner, createdBy, threadID 
 		return teamTask{}, false, fmt.Errorf("channel access denied")
 	}
 	title = strings.TrimSpace(title)
-	if existing := b.findReusableTaskLocked(channel, title, strings.TrimSpace(threadID), strings.TrimSpace(owner)); existing != nil {
+	if existing := b.findReusableTaskLocked(taskReuseMatch{
+		Channel:  channel,
+		Title:    title,
+		ThreadID: strings.TrimSpace(threadID),
+		Owner:    strings.TrimSpace(owner),
+	}); existing != nil {
 		if existing.Details == "" && strings.TrimSpace(details) != "" {
 			existing.Details = strings.TrimSpace(details)
 		}
@@ -6128,7 +7561,12 @@ func (b *Broker) EnsureTask(channel, title, details, owner, createdBy, threadID 
 		if existing.ThreadID == "" && strings.TrimSpace(threadID) != "" {
 			existing.ThreadID = strings.TrimSpace(threadID)
 		}
+		b.ensureTaskOwnerChannelMembershipLocked(channel, existing.Owner)
 		existing.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		b.queueTaskBehindActiveOwnerLaneLocked(existing)
+		if err := rejectTheaterTaskForLiveBusiness(existing); err != nil {
+			return teamTask{}, false, err
+		}
 		b.scheduleTaskLifecycleLocked(existing)
 		if err := b.syncTaskWorktreeLocked(existing); err != nil {
 			return teamTask{}, false, err
@@ -6157,6 +7595,11 @@ func (b *Broker) EnsureTask(channel, title, details, owner, createdBy, threadID 
 		task.Blocked = true
 	} else if task.Owner != "" {
 		task.Status = "in_progress"
+	}
+	b.ensureTaskOwnerChannelMembershipLocked(channel, task.Owner)
+	b.queueTaskBehindActiveOwnerLaneLocked(&task)
+	if err := rejectTheaterTaskForLiveBusiness(&task); err != nil {
+		return teamTask{}, false, err
 	}
 	b.scheduleTaskLifecycleLocked(&task)
 	if err := b.syncTaskWorktreeLocked(&task); err != nil {
@@ -6189,10 +7632,7 @@ type plannedTaskInput struct {
 func (b *Broker) EnsurePlannedTask(input plannedTaskInput) (teamTask, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	channel := normalizeChannelSlug(input.Channel)
-	if channel == "" {
-		channel = "general"
-	}
+	channel := b.preferredTaskChannelLocked(input.Channel, input.CreatedBy, input.Owner, input.Title, input.Details)
 	if b.findChannelLocked(channel) == nil {
 		return teamTask{}, false, fmt.Errorf("channel not found")
 	}
@@ -6200,7 +7640,15 @@ func (b *Broker) EnsurePlannedTask(input plannedTaskInput) (teamTask, bool, erro
 		return teamTask{}, false, fmt.Errorf("channel access denied")
 	}
 	title := strings.TrimSpace(input.Title)
-	if existing := b.findReusableTaskLocked(channel, title, strings.TrimSpace(input.ThreadID), strings.TrimSpace(input.Owner)); existing != nil {
+	if existing := b.findReusableTaskLocked(taskReuseMatch{
+		Channel:          channel,
+		Title:            title,
+		ThreadID:         strings.TrimSpace(input.ThreadID),
+		Owner:            strings.TrimSpace(input.Owner),
+		PipelineID:       strings.TrimSpace(input.PipelineID),
+		SourceSignalID:   strings.TrimSpace(input.SourceSignalID),
+		SourceDecisionID: strings.TrimSpace(input.SourceDecisionID),
+	}); existing != nil {
 		if existing.Details == "" && strings.TrimSpace(input.Details) != "" {
 			existing.Details = strings.TrimSpace(input.Details)
 		}
@@ -6229,7 +7677,12 @@ func (b *Broker) EnsurePlannedTask(input plannedTaskInput) (teamTask, bool, erro
 		if existing.SourceDecisionID == "" && strings.TrimSpace(input.SourceDecisionID) != "" {
 			existing.SourceDecisionID = strings.TrimSpace(input.SourceDecisionID)
 		}
+		b.ensureTaskOwnerChannelMembershipLocked(channel, existing.Owner)
 		existing.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		b.queueTaskBehindActiveOwnerLaneLocked(existing)
+		if err := rejectTheaterTaskForLiveBusiness(existing); err != nil {
+			return teamTask{}, false, err
+		}
 		b.scheduleTaskLifecycleLocked(existing)
 		if err := b.syncTaskWorktreeLocked(existing); err != nil {
 			return teamTask{}, false, err
@@ -6265,6 +7718,11 @@ func (b *Broker) EnsurePlannedTask(input plannedTaskInput) (teamTask, bool, erro
 	} else if task.Owner != "" {
 		task.Status = "in_progress"
 	}
+	b.ensureTaskOwnerChannelMembershipLocked(channel, task.Owner)
+	b.queueTaskBehindActiveOwnerLaneLocked(&task)
+	if err := rejectTheaterTaskForLiveBusiness(&task); err != nil {
+		return teamTask{}, false, err
+	}
 	b.scheduleTaskLifecycleLocked(&task)
 	if err := b.syncTaskWorktreeLocked(&task); err != nil {
 		return teamTask{}, false, err
@@ -6280,6 +7738,9 @@ func (b *Broker) EnsurePlannedTask(input plannedTaskInput) (teamTask, bool, erro
 // hasUnresolvedDepsLocked returns true if any of the task's dependencies are not done.
 func (b *Broker) hasUnresolvedDepsLocked(task *teamTask) bool {
 	for _, depID := range task.DependsOn {
+		if requestIsResolvedLocked(b.requests, depID) {
+			continue
+		}
 		found := false
 		for j := range b.tasks {
 			if b.tasks[j].ID == depID {
@@ -6301,6 +7762,7 @@ func (b *Broker) hasUnresolvedDepsLocked(task *teamTask) bool {
 // dependencies are now resolved. For each newly unblocked task, it appends a
 // "task_unblocked" action so the launcher can deliver a notification to the owner.
 func (b *Broker) unblockDependentsLocked(completedTaskID string) {
+	now := time.Now().UTC().Format(time.RFC3339)
 	for i := range b.tasks {
 		if !b.tasks[i].Blocked {
 			continue
@@ -6317,6 +7779,15 @@ func (b *Broker) unblockDependentsLocked(completedTaskID string) {
 		}
 		if !b.hasUnresolvedDepsLocked(&b.tasks[i]) {
 			b.tasks[i].Blocked = false
+			if strings.TrimSpace(b.tasks[i].Owner) != "" {
+				b.tasks[i].Status = "in_progress"
+			} else {
+				b.tasks[i].Status = "open"
+			}
+			b.queueTaskBehindActiveOwnerLaneLocked(&b.tasks[i])
+			b.tasks[i].UpdatedAt = now
+			b.scheduleTaskLifecycleLocked(&b.tasks[i])
+			_ = b.syncTaskWorktreeLocked(&b.tasks[i])
 			b.appendActionLocked(
 				"task_unblocked",
 				"office",
@@ -6329,11 +7800,59 @@ func (b *Broker) unblockDependentsLocked(completedTaskID string) {
 	}
 }
 
-func (b *Broker) findReusableTaskLocked(channel, title, threadID, owner string) *teamTask {
-	channel = normalizeChannelSlug(channel)
-	title = strings.TrimSpace(title)
-	threadID = strings.TrimSpace(threadID)
-	owner = strings.TrimSpace(owner)
+type taskReuseMatch struct {
+	Channel          string
+	Title            string
+	ThreadID         string
+	Owner            string
+	PipelineID       string
+	SourceSignalID   string
+	SourceDecisionID string
+}
+
+func (m taskReuseMatch) hasScopedIdentity() bool {
+	return strings.TrimSpace(m.SourceSignalID) != "" ||
+		strings.TrimSpace(m.SourceDecisionID) != ""
+}
+
+func hasScopedTaskIdentity(task *teamTask) bool {
+	if task == nil {
+		return false
+	}
+	return strings.TrimSpace(task.SourceSignalID) != "" ||
+		strings.TrimSpace(task.SourceDecisionID) != ""
+}
+
+func taskOwnerMatches(task *teamTask, owner string) bool {
+	if task == nil {
+		return false
+	}
+	taskOwner := strings.TrimSpace(task.Owner)
+	return owner == "" || taskOwner == owner || taskOwner == ""
+}
+
+func scopedTaskIdentityMatches(task *teamTask, match taskReuseMatch) bool {
+	if task == nil {
+		return false
+	}
+	if match.PipelineID != "" && strings.TrimSpace(task.PipelineID) != "" && strings.TrimSpace(task.PipelineID) != match.PipelineID {
+		return false
+	}
+	if match.SourceSignalID != "" && strings.TrimSpace(task.SourceSignalID) != match.SourceSignalID {
+		return false
+	}
+	if match.SourceDecisionID != "" && strings.TrimSpace(task.SourceDecisionID) != match.SourceDecisionID {
+		return false
+	}
+	return true
+}
+
+func (b *Broker) findReusableTaskLocked(match taskReuseMatch) *teamTask {
+	channel := normalizeChannelSlug(match.Channel)
+	title := strings.TrimSpace(match.Title)
+	threadID := strings.TrimSpace(match.ThreadID)
+	owner := strings.TrimSpace(match.Owner)
+	scopedIdentity := match.hasScopedIdentity()
 	for i := range b.tasks {
 		task := &b.tasks[i]
 		if normalizeChannelSlug(task.Channel) != channel {
@@ -6342,14 +7861,37 @@ func (b *Broker) findReusableTaskLocked(channel, title, threadID, owner string) 
 		if strings.EqualFold(strings.TrimSpace(task.Status), "done") {
 			continue
 		}
+		sameTitle := title != "" && strings.EqualFold(strings.TrimSpace(task.Title), title)
 		if threadID != "" && strings.TrimSpace(task.ThreadID) == threadID {
-			return task
-		}
-		if title != "" && strings.EqualFold(strings.TrimSpace(task.Title), title) {
-			if owner == "" || strings.TrimSpace(task.Owner) == owner || strings.TrimSpace(task.Owner) == "" {
+			if sameTitle && taskOwnerMatches(task, owner) {
+				taskHasScopedIdentity := hasScopedTaskIdentity(task)
+				if scopedIdentity || taskHasScopedIdentity {
+					if !scopedIdentity || !taskHasScopedIdentity {
+						continue
+					}
+					if scopedTaskIdentityMatches(task, match) {
+						return task
+					}
+					continue
+				}
 				return task
 			}
+			continue
 		}
+		if !sameTitle || !taskOwnerMatches(task, owner) {
+			continue
+		}
+		taskHasScopedIdentity := hasScopedTaskIdentity(task)
+		if scopedIdentity || taskHasScopedIdentity {
+			if !scopedIdentity || !taskHasScopedIdentity {
+				continue
+			}
+			if scopedTaskIdentityMatches(task, match) {
+				return task
+			}
+			continue
+		}
+		return task
 	}
 	return nil
 }
@@ -6603,7 +8145,9 @@ func (b *Broker) handlePostRequestAnswer(w http.ResponseWriter, r *http.Request)
 		b.requests[i].RecheckAt = ""
 		b.requests[i].DueAt = ""
 		b.completeSchedulerJobsLocked("request", b.requests[i].ID, b.requests[i].Channel)
+		b.unblockDependentsLocked(b.requests[i].ID)
 		b.pendingInterview = firstBlockingRequest(b.requests)
+		b.unblockTasksForAnsweredRequestLocked(b.requests[i])
 
 		// Skill proposal callback: accept activates the skill, reject archives it.
 		if b.requests[i].Kind == "skill_proposal" {
@@ -6658,6 +8202,63 @@ func (b *Broker) handlePostRequestAnswer(w http.ResponseWriter, r *http.Request)
 	}
 	b.mu.Unlock()
 	http.Error(w, "request not found", http.StatusNotFound)
+}
+
+func (b *Broker) unblockTasksForAnsweredRequestLocked(req humanInterview) {
+	reqID := strings.TrimSpace(req.ID)
+	if reqID == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	answerText := strings.TrimSpace(reqAnswerSummary(req.Answered))
+	for i := range b.tasks {
+		task := &b.tasks[i]
+		if !task.Blocked || strings.EqualFold(strings.TrimSpace(task.Status), "done") {
+			continue
+		}
+		haystack := strings.ToLower(strings.TrimSpace(task.Title + "\n" + task.Details))
+		if !strings.Contains(haystack, strings.ToLower(reqID)) {
+			continue
+		}
+		task.Blocked = false
+		if strings.EqualFold(strings.TrimSpace(task.Status), "blocked") {
+			if strings.TrimSpace(task.Owner) != "" {
+				task.Status = "in_progress"
+			} else {
+				task.Status = "open"
+			}
+		}
+		b.queueTaskBehindActiveOwnerLaneLocked(task)
+		if answerText != "" && !strings.Contains(task.Details, answerText) {
+			task.Details = strings.TrimSpace(task.Details)
+			if task.Details != "" {
+				task.Details += "\n\n"
+			}
+			task.Details += fmt.Sprintf("Human answer for %s: %s", reqID, answerText)
+		}
+		task.UpdatedAt = now
+		b.appendActionLocked(
+			"task_unblocked",
+			"office",
+			task.Channel,
+			req.From,
+			truncateSummary(task.Title+" unblocked by answered "+reqID, 140),
+			task.ID,
+		)
+	}
+}
+
+func reqAnswerSummary(answer *interviewAnswer) string {
+	if answer == nil {
+		return ""
+	}
+	if text := strings.TrimSpace(answer.CustomText); text != "" {
+		return text
+	}
+	if text := strings.TrimSpace(answer.ChoiceText); text != "" {
+		return text
+	}
+	return strings.TrimSpace(answer.ChoiceID)
 }
 
 func (b *Broker) handleInterview(w http.ResponseWriter, r *http.Request) {
@@ -7212,8 +8813,11 @@ func (b *Broker) handleInvokeSkill(w http.ResponseWriter, r *http.Request) {
 
 	invoker := strings.TrimSpace(body.InvokedBy)
 	if invoker == "" {
-		invoker = "unknown"
+		invoker = "you"
 	}
+	sk.LastExecutionAt = now
+	sk.LastExecutionStatus = "invoked"
+	sk.UpdatedAt = now
 
 	b.counter++
 	b.appendMessageLocked(channelMessage{
@@ -7241,7 +8845,7 @@ func (b *Broker) handleInvokeSkill(w http.ResponseWriter, r *http.Request) {
 func (b *Broker) parseSkillProposalLocked(msg channelMessage) {
 	// Only the team lead (CEO) may propose skills via message blocks.
 	// If no lead exists (empty office), reject all proposals to prevent injection.
-	lead := officeLeadSlugFrom(b.members, nil)
+	lead := officeLeadSlugFrom(b.members)
 	if lead == "" || msg.From != lead {
 		return
 	}
@@ -7249,119 +8853,130 @@ func (b *Broker) parseSkillProposalLocked(msg channelMessage) {
 	const startTag = "[SKILL PROPOSAL]"
 	const endTag = "[/SKILL PROPOSAL]"
 
-	idx := strings.Index(msg.Content, startTag)
-	if idx < 0 {
-		return
-	}
-	endIdx := strings.Index(msg.Content, endTag)
-	if endIdx < 0 {
-		return
-	}
-
-	block := msg.Content[idx+len(startTag) : endIdx]
-	block = strings.TrimSpace(block)
-
-	// Split on "---" separator between metadata and instructions
-	parts := strings.SplitN(block, "---", 2)
-	if len(parts) < 2 {
-		return
-	}
-
-	meta := strings.TrimSpace(parts[0])
-	instructions := strings.TrimSpace(parts[1])
-
-	// Parse metadata fields
-	var name, title, description, trigger string
-	var tags []string
-	for _, line := range strings.Split(meta, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Name:") {
-			name = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
-		} else if strings.HasPrefix(line, "Title:") {
-			title = strings.TrimSpace(strings.TrimPrefix(line, "Title:"))
-		} else if strings.HasPrefix(line, "Description:") {
-			description = strings.TrimSpace(strings.TrimPrefix(line, "Description:"))
-		} else if strings.HasPrefix(line, "Trigger:") {
-			trigger = strings.TrimSpace(strings.TrimPrefix(line, "Trigger:"))
-		} else if strings.HasPrefix(line, "Tags:") {
-			raw := strings.TrimSpace(strings.TrimPrefix(line, "Tags:"))
-			for _, t := range strings.Split(raw, ",") {
-				t = strings.TrimSpace(t)
-				if t != "" {
-					tags = append(tags, t)
-				}
-			}
-		}
-	}
-
-	if name == "" || title == "" {
-		return
-	}
-
-	slug := skillSlug(name)
-
-	// Check for duplicate (skip archived)
-	for _, s := range b.skills {
-		if s.Name == slug && s.Status != "archived" {
-			return
-		}
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
 	channel := msg.Channel
 	if channel == "" {
 		channel = "general"
 	}
 
-	skill := teamSkill{
-		ID:          slug,
-		Name:        slug,
-		Title:       title,
-		Description: description,
-		Content:     instructions,
-		CreatedBy:   msg.From,
-		Channel:     channel,
-		Tags:        tags,
-		Trigger:     trigger,
-		UsageCount:  0,
-		Status:      "proposed",
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	b.skills = append(b.skills, skill)
+	content := msg.Content
+	searchFrom := 0
+	for {
+		startIdx := strings.Index(content[searchFrom:], startTag)
+		if startIdx < 0 {
+			return
+		}
+		startIdx += searchFrom
+		blockStart := startIdx + len(startTag)
+		endRel := strings.Index(content[blockStart:], endTag)
+		if endRel < 0 {
+			return
+		}
+		endIdx := blockStart + endRel
+		block := strings.TrimSpace(content[blockStart:endIdx])
+		searchFrom = endIdx + len(endTag)
 
-	// Announce the proposal
-	b.counter++
-	b.appendMessageLocked(channelMessage{
-		ID:        fmt.Sprintf("msg-%d", b.counter),
-		From:      "system",
-		Channel:   channel,
-		Kind:      "skill_proposal",
-		Title:     "Skill Proposed: " + title,
-		Content:   fmt.Sprintf("@%s proposed a new skill **%s**: %s. Use /skills to review and approve.", msg.From, title, description),
-		Timestamp: now,
-	})
+		// Split on "---" separator between metadata and instructions.
+		parts := strings.SplitN(block, "---", 2)
+		if len(parts) < 2 {
+			continue
+		}
 
-	// Surface the proposal in the Requests panel as a non-blocking human decision.
-	b.counter++
-	interview := humanInterview{
-		ID:        fmt.Sprintf("request-%d", b.counter),
-		Kind:      "skill_proposal",
-		Status:    "pending",
-		From:      msg.From,
-		Channel:   channel,
-		Title:     "Approve skill: " + title,
-		Question:  fmt.Sprintf("@%s proposed skill **%s**: %s\n\nActivate it?", msg.From, title, description),
-		ReplyTo:   slug,
-		Blocking:  false,
-		CreatedAt: now,
-		UpdatedAt: now,
+		meta := strings.TrimSpace(parts[0])
+		instructions := strings.TrimSpace(parts[1])
+
+		// Parse metadata fields.
+		var name, title, description, trigger string
+		var tags []string
+		for _, line := range strings.Split(meta, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "Name:") {
+				name = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
+			} else if strings.HasPrefix(line, "Title:") {
+				title = strings.TrimSpace(strings.TrimPrefix(line, "Title:"))
+			} else if strings.HasPrefix(line, "Description:") {
+				description = strings.TrimSpace(strings.TrimPrefix(line, "Description:"))
+			} else if strings.HasPrefix(line, "Trigger:") {
+				trigger = strings.TrimSpace(strings.TrimPrefix(line, "Trigger:"))
+			} else if strings.HasPrefix(line, "Tags:") {
+				raw := strings.TrimSpace(strings.TrimPrefix(line, "Tags:"))
+				for _, t := range strings.Split(raw, ",") {
+					t = strings.TrimSpace(t)
+					if t != "" {
+						tags = append(tags, t)
+					}
+				}
+			}
+		}
+
+		if name == "" || title == "" {
+			continue
+		}
+
+		slug := skillSlug(name)
+
+		// Check for duplicate (skip archived).
+		duplicate := false
+		for _, s := range b.skills {
+			if s.Name == slug && s.Status != "archived" {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+
+		now := time.Now().UTC().Format(time.RFC3339)
+		skill := teamSkill{
+			ID:          slug,
+			Name:        slug,
+			Title:       title,
+			Description: description,
+			Content:     instructions,
+			CreatedBy:   msg.From,
+			Channel:     channel,
+			Tags:        tags,
+			Trigger:     trigger,
+			UsageCount:  0,
+			Status:      "proposed",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		b.skills = append(b.skills, skill)
+
+		// Announce the proposal.
+		b.counter++
+		b.appendMessageLocked(channelMessage{
+			ID:        fmt.Sprintf("msg-%d", b.counter),
+			From:      "system",
+			Channel:   channel,
+			Kind:      "skill_proposal",
+			Title:     "Skill Proposed: " + title,
+			Content:   fmt.Sprintf("@%s proposed a new skill **%s**: %s. Use /skills to review and approve.", msg.From, title, description),
+			Timestamp: now,
+		})
+
+		// Surface the proposal in the Requests panel as a non-blocking human decision.
+		b.counter++
+		interview := humanInterview{
+			ID:        fmt.Sprintf("request-%d", b.counter),
+			Kind:      "skill_proposal",
+			Status:    "pending",
+			From:      msg.From,
+			Channel:   channel,
+			Title:     "Approve skill: " + title,
+			Question:  fmt.Sprintf("@%s proposed skill **%s**: %s\n\nActivate it?", msg.From, title, description),
+			ReplyTo:   slug,
+			Blocking:  false,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		interview.Options, interview.RecommendedID = normalizeRequestOptions(interview.Kind, "accept", []interviewOption{
+			{ID: "accept", Label: "Accept"},
+			{ID: "reject", Label: "Reject"},
+		})
+		b.requests = append(b.requests, interview)
 	}
-	interview.Options, interview.RecommendedID = normalizeRequestOptions(interview.Kind, "accept", []interviewOption{
-		{ID: "accept", Label: "Accept"},
-		{ID: "reject", Label: "Reject"},
-	})
-	b.requests = append(b.requests, interview)
 }
 
 // SeedDefaultSkills pre-populates the broker with the pack's default skills.

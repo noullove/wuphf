@@ -101,22 +101,22 @@ func (l *Launcher) buildResumePackets() map[string]string {
 		return nil
 	}
 
-	// Build the set of valid pack agent slugs to filter recipients.
-	packSlugs := make(map[string]struct{})
-	if l.pack != nil {
-		for _, a := range l.pack.Agents {
-			packSlugs[a.Slug] = struct{}{}
-		}
+	// Build the set of valid office agent slugs from the live broker roster, not
+	// the original launch pack. Dynamically created specialists must resume after
+	// restart just like built-in members.
+	officeSlugs := make(map[string]struct{})
+	for _, member := range l.officeMembersSnapshot() {
+		officeSlugs[member.Slug] = struct{}{}
 	}
 	inPack := func(slug string) bool {
-		if len(packSlugs) == 0 {
-			return true // no pack defined — allow all (nil-pack safety)
+		if len(officeSlugs) == 0 {
+			return true // no roster loaded — allow all (nil-roster safety)
 		}
-		_, ok := packSlugs[slug]
+		_, ok := officeSlugs[slug]
 		return ok
 	}
 
-	// Determine pack lead slug.
+	// Determine office lead slug.
 	lead := l.officeLeadSlug()
 
 	// Collect in-flight tasks per owner — skip owners not in the pack.

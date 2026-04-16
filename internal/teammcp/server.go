@@ -14,11 +14,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/nex-crm/wuphf/internal/brokeraddr"
 	"github.com/nex-crm/wuphf/internal/team"
 )
 
-const defaultBrokerBaseURL = "http://127.0.0.1:7890"
-const defaultBrokerTokenFile = "/tmp/wuphf-broker-token"
+const defaultBrokerTokenFile = brokeraddr.DefaultTokenFile
 
 var reconfigureOfficeSessionFn = reconfigureLiveOffice
 
@@ -296,15 +296,17 @@ type TeamRuntimeStateArgs struct {
 }
 
 type TeamTaskArgs struct {
-	Action    string   `json:"action" jsonschema:"One of: create, claim, assign, complete, block, release"`
-	Channel   string   `json:"channel,omitempty" jsonschema:"Channel slug. Defaults to the agent's current channel or general."`
-	ID        string   `json:"id,omitempty" jsonschema:"Task ID for non-create actions"`
-	Title     string   `json:"title,omitempty" jsonschema:"Task title when creating a task"`
-	Details   string   `json:"details,omitempty" jsonschema:"Optional detail or update"`
-	Owner     string   `json:"owner,omitempty" jsonschema:"Owner slug for claim or assign"`
-	ThreadID  string   `json:"thread_id,omitempty" jsonschema:"Related thread or message id"`
-	DependsOn []string `json:"depends_on,omitempty" jsonschema:"Task IDs this task must wait for before starting (create action only)"`
-	MySlug    string   `json:"my_slug,omitempty" jsonschema:"Your agent slug. Defaults to WUPHF_AGENT_SLUG."`
+	Action        string   `json:"action" jsonschema:"One of: create, claim, assign, complete, block, release"`
+	Channel       string   `json:"channel,omitempty" jsonschema:"Channel slug. Defaults to the agent's current channel or general."`
+	ID            string   `json:"id,omitempty" jsonschema:"Task ID for non-create actions"`
+	Title         string   `json:"title,omitempty" jsonschema:"Task title when creating a task"`
+	Details       string   `json:"details,omitempty" jsonschema:"Optional detail or update"`
+	Owner         string   `json:"owner,omitempty" jsonschema:"Owner slug for claim or assign"`
+	ThreadID      string   `json:"thread_id,omitempty" jsonschema:"Related thread or message id"`
+	TaskType      string   `json:"task_type,omitempty" jsonschema:"Optional task type such as research, feature, launch, follow_up, bugfix, or incident"`
+	ExecutionMode string   `json:"execution_mode,omitempty" jsonschema:"Optional execution mode such as office or local_worktree"`
+	DependsOn     []string `json:"depends_on,omitempty" jsonschema:"Task IDs this task must wait for before starting (create action only)"`
+	MySlug        string   `json:"my_slug,omitempty" jsonschema:"Your agent slug. Defaults to WUPHF_AGENT_SLUG."`
 }
 
 type TeamChannelsArgs struct{}
@@ -368,10 +370,12 @@ type TeamMemberArgs struct {
 type TeamPlanArgs struct {
 	Channel string `json:"channel,omitempty" jsonschema:"Channel slug. Defaults to the agent's current channel or general."`
 	Tasks   []struct {
-		Title     string   `json:"title" jsonschema:"Task title"`
-		Assignee  string   `json:"assignee" jsonschema:"Agent slug to own this task"`
-		Details   string   `json:"details,omitempty" jsonschema:"Optional task details"`
-		DependsOn []string `json:"depends_on,omitempty" jsonschema:"Titles or IDs of tasks this depends on"`
+		Title         string   `json:"title" jsonschema:"Task title"`
+		Assignee      string   `json:"assignee" jsonschema:"Agent slug to own this task"`
+		Details       string   `json:"details,omitempty" jsonschema:"Optional task details"`
+		TaskType      string   `json:"task_type,omitempty" jsonschema:"Optional task type such as research, feature, launch, follow_up, bugfix, or incident"`
+		ExecutionMode string   `json:"execution_mode,omitempty" jsonschema:"Optional execution mode such as office or local_worktree"`
+		DependsOn     []string `json:"depends_on,omitempty" jsonschema:"Titles or IDs of tasks this depends on"`
 	} `json:"tasks" jsonschema:"List of tasks to create in dependency order"`
 	MySlug string `json:"my_slug,omitempty" jsonschema:"Your agent slug. Defaults to WUPHF_AGENT_SLUG."`
 }
@@ -413,7 +417,12 @@ func Run(ctx context.Context) error {
 		Version: "0.1.0",
 	}, nil)
 
-	if isOneOnOneMode() {
+	configureServerTools(server, resolveSlugOptional(""), strings.TrimSpace(os.Getenv("WUPHF_CHANNEL")), isOneOnOneMode())
+	return server.Run(ctx, &mcp.StdioTransport{})
+}
+
+func configureServerTools(server *mcp.Server, slug string, channel string, oneOnOne bool) {
+	if oneOnOne {
 		mcp.AddTool(server, officeWriteTool(
 			"reply",
 			"Send your reply to the human in the direct 1:1 conversation.",
@@ -455,15 +464,12 @@ func Run(ctx context.Context) error {
 		), handleTeamRuntimeState)
 
 		registerActionTools(server)
-
-		return server.Run(ctx, &mcp.StdioTransport{})
+		return
 	}
 
 	// ─── Role-based tool registration ───
 	// Each role gets only the tools it needs. Cuts MCP schema overhead
 	// from ~125k tokens (27 tools) down to ~15k (4 tools in DM mode).
-	slug := resolveSlugOptional("")
-	channel := strings.TrimSpace(os.Getenv("WUPHF_CHANNEL"))
 	isDM := strings.HasPrefix(channel, "dm-")
 	isLead := slug == "" || slug == "ceo"
 
@@ -501,7 +507,8 @@ func Run(ctx context.Context) error {
 			"team_skill_run",
 			"Invoke a named team skill. When the human's request matches an available skill, call this BEFORE replying — do not freelance. Bumps the skill's usage, logs a skill_invocation to the channel, and returns the skill's canonical step-by-step content for you to follow.",
 		), handleTeamSkillRun)
-		return server.Run(ctx, &mcp.StdioTransport{})
+		registerActionTools(server)
+		return
 	}
 
 	// Office mode: core tools for all agents
@@ -547,12 +554,12 @@ func Run(ctx context.Context) error {
 		"Open or find a direct message channel with the human. Use this when the human explicitly asks to DM an agent. Agent-to-agent DMs are not allowed — all inter-agent communication must happen in public channels.",
 	), handleTeamDMOpen)
 
-	mcp.AddTool(server, officeDestructiveTool(
+	mcp.AddTool(server, officeWriteTool(
 		"team_channel",
 		"Create or remove an office channel. When creating a channel, include a clear description of what work belongs there and the initial roster that should be in it. Only do this when the human explicitly wants channel structure.",
 	), handleTeamChannel)
 
-	mcp.AddTool(server, officeDestructiveTool(
+	mcp.AddTool(server, officeWriteTool(
 		"team_channel_member",
 		"Add, remove, disable, or enable an agent in a specific office channel.",
 	), handleTeamChannelMember)
@@ -562,7 +569,7 @@ func Run(ctx context.Context) error {
 		"CEO-only tool to bridge relevant context from one channel into another and leave a visible cross-channel trail.",
 	), handleTeamBridge)
 
-	mcp.AddTool(server, officeDestructiveTool(
+	mcp.AddTool(server, officeWriteTool(
 		"team_member",
 		"Create or remove an office-wide member. Only create new members when the human explicitly wants to expand the team.",
 	), handleTeamMember)
@@ -646,6 +653,7 @@ func Run(ctx context.Context) error {
 		"team_skill_run",
 		"Invoke a named team skill. When the request matches an available skill (see the skill list in your prompt), call this BEFORE doing the work — do not freelance. Bumps the skill's usage, logs a skill_invocation in the channel so the office sees you followed the playbook, and returns the skill's canonical step-by-step content for you to execute.",
 	), handleTeamSkillRun)
+	registerActionTools(server)
 
 	// Lead-only tools: CEO gets coordination, delegation, and structural tools
 	if isLead {
@@ -685,22 +693,19 @@ func Run(ctx context.Context) error {
 			"team_channels",
 			"List office channels and memberships.",
 		), handleTeamChannels)
-		mcp.AddTool(server, officeDestructiveTool(
+		mcp.AddTool(server, officeWriteTool(
 			"team_channel",
 			"Create or remove a channel.",
 		), handleTeamChannel)
-		mcp.AddTool(server, officeDestructiveTool(
+		mcp.AddTool(server, officeWriteTool(
 			"team_channel_member",
 			"Add or remove an agent from a channel.",
 		), handleTeamChannelMember)
-		mcp.AddTool(server, officeDestructiveTool(
+		mcp.AddTool(server, officeWriteTool(
 			"team_member",
 			"Create or remove an office member.",
 		), handleTeamMember)
-		registerActionTools(server)
 	}
-
-	return server.Run(ctx, &mcp.StdioTransport{})
 }
 
 func handleTeamBroadcast(ctx context.Context, _ *mcp.CallToolRequest, args TeamBroadcastArgs) (*mcp.CallToolResult, any, error) {
@@ -867,6 +872,7 @@ func suppressBroadcastReason(slug, content, replyTo string, messages []brokerMes
 	if strings.TrimSpace(slug) == "" || slug == "ceo" {
 		return ""
 	}
+	threadRoot := threadRootForReply(replyTo, messages)
 	myDomain := inferOfficeAgentDomain(slug)
 	latest := latestRelevantMessage(messages, replyTo)
 	latestDomain := inferOfficeTextDomain(content)
@@ -885,7 +891,7 @@ func suppressBroadcastReason(slug, content, replyTo string, messages []brokerMes
 			}
 		}
 	}
-	ownsTask := ownsRelevantTask(slug, replyTo, latestDomain, tasks)
+	ownsTask := ownsRelevantTask(slug, replyTo, threadRoot, latestDomain, tasks)
 
 	if explicitNeed || ownsTask {
 		return ""
@@ -916,18 +922,37 @@ func latestRelevantMessage(messages []brokerMessage, replyTo string) *brokerMess
 	return nil
 }
 
-func ownsRelevantTask(slug, replyTo, domain string, tasks []brokerTaskSummary) bool {
-	slug = strings.TrimSpace(slug)
+func threadRootForReply(replyTo string, messages []brokerMessage) string {
 	replyTo = strings.TrimSpace(replyTo)
-	for _, task := range tasks {
-		if strings.EqualFold(strings.TrimSpace(task.Status), "done") {
+	if replyTo == "" {
+		return ""
+	}
+	for _, msg := range messages {
+		if strings.TrimSpace(msg.ID) != replyTo {
 			continue
 		}
+		if root := strings.TrimSpace(msg.ReplyTo); root != "" {
+			return root
+		}
+		return replyTo
+	}
+	return replyTo
+}
+
+func ownsRelevantTask(slug, replyTo, threadRoot, domain string, tasks []brokerTaskSummary) bool {
+	slug = strings.TrimSpace(slug)
+	replyTo = strings.TrimSpace(replyTo)
+	threadRoot = strings.TrimSpace(threadRoot)
+	now := time.Now()
+	for _, task := range tasks {
 		if strings.TrimSpace(task.Owner) != slug {
 			continue
 		}
+		if !taskAllowsFollowUpBroadcast(task, replyTo, domain, now) {
+			continue
+		}
 		if replyTo != "" {
-			if strings.TrimSpace(task.ThreadID) == replyTo {
+			if strings.TrimSpace(task.ThreadID) == replyTo || (threadRoot != "" && strings.TrimSpace(task.ThreadID) == threadRoot) {
 				return true
 			}
 			continue
@@ -938,6 +963,31 @@ func ownsRelevantTask(slug, replyTo, domain string, tasks []brokerTaskSummary) b
 		}
 	}
 	return false
+}
+
+const completedTaskBroadcastGrace = 15 * time.Minute
+
+func taskAllowsFollowUpBroadcast(task brokerTaskSummary, replyTo, domain string, now time.Time) bool {
+	status := strings.TrimSpace(task.Status)
+	if !strings.EqualFold(status, "done") {
+		return true
+	}
+	if replyTo != "" && strings.TrimSpace(task.ThreadID) == replyTo {
+		return true
+	}
+	updatedAt := strings.TrimSpace(task.UpdatedAt)
+	if updatedAt == "" {
+		return false
+	}
+	updated, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return false
+	}
+	if now.Sub(updated) > completedTaskBroadcastGrace {
+		return false
+	}
+	taskDomain := inferOfficeTextDomain(task.Title + " " + task.Details)
+	return taskDomain == domain || taskDomain == "general" || domain == ""
 }
 
 // inferOfficeAgentDomain and inferOfficeTextDomain are canonical wrappers around
@@ -1187,6 +1237,12 @@ func handleTeamTask(ctx context.Context, _ *mcp.CallToolRequest, args TeamTaskAr
 		"details":    strings.TrimSpace(args.Details),
 		"thread_id":  strings.TrimSpace(args.ThreadID),
 		"created_by": mySlug,
+	}
+	if taskType := strings.TrimSpace(args.TaskType); taskType != "" {
+		payload["task_type"] = taskType
+	}
+	if executionMode := strings.TrimSpace(args.ExecutionMode); executionMode != "" {
+		payload["execution_mode"] = executionMode
 	}
 	if action == "create" && len(args.DependsOn) > 0 {
 		payload["depends_on"] = args.DependsOn
@@ -1469,18 +1525,22 @@ func handleTeamPlan(ctx context.Context, _ *mcp.CallToolRequest, args TeamPlanAr
 	}
 
 	type planItem struct {
-		Title     string   `json:"title"`
-		Assignee  string   `json:"assignee"`
-		Details   string   `json:"details,omitempty"`
-		DependsOn []string `json:"depends_on,omitempty"`
+		Title         string   `json:"title"`
+		Assignee      string   `json:"assignee"`
+		Details       string   `json:"details,omitempty"`
+		TaskType      string   `json:"task_type,omitempty"`
+		ExecutionMode string   `json:"execution_mode,omitempty"`
+		DependsOn     []string `json:"depends_on,omitempty"`
 	}
 	items := make([]planItem, 0, len(args.Tasks))
 	for _, t := range args.Tasks {
 		items = append(items, planItem{
-			Title:     strings.TrimSpace(t.Title),
-			Assignee:  strings.TrimSpace(t.Assignee),
-			Details:   strings.TrimSpace(t.Details),
-			DependsOn: t.DependsOn,
+			Title:         strings.TrimSpace(t.Title),
+			Assignee:      strings.TrimSpace(t.Assignee),
+			Details:       strings.TrimSpace(t.Details),
+			TaskType:      strings.TrimSpace(t.TaskType),
+			ExecutionMode: strings.TrimSpace(t.ExecutionMode),
+			DependsOn:     t.DependsOn,
 		})
 	}
 
@@ -2009,9 +2069,18 @@ func handleTeamChannel(ctx context.Context, _ *mcp.CallToolRequest, args TeamCha
 	if err != nil {
 		return toolError(err), nil, nil
 	}
-	channel := resolveConversationChannel(ctx, slug, args.Channel)
+	action := strings.TrimSpace(args.Action)
+	channel := normalizeSlug(args.Channel)
+	switch action {
+	case "create", "remove":
+		if channel == "" {
+			return toolError(fmt.Errorf("channel slug is required for %s", action)), nil, nil
+		}
+	default:
+		channel = resolveConversationChannel(ctx, slug, args.Channel)
+	}
 	if err := brokerPostJSON(ctx, "/channels", map[string]any{
-		"action":      strings.TrimSpace(args.Action),
+		"action":      action,
 		"slug":        channel,
 		"name":        strings.TrimSpace(args.Name),
 		"description": strings.TrimSpace(args.Description),
@@ -2162,7 +2231,7 @@ func brokerBaseURL() string {
 		base = strings.TrimSpace(os.Getenv("NEX_TEAM_BROKER_URL"))
 	}
 	if base == "" {
-		base = defaultBrokerBaseURL
+		base = brokeraddr.ResolveBaseURL()
 	}
 	return strings.TrimRight(base, "/")
 }

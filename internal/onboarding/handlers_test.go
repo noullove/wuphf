@@ -76,6 +76,36 @@ func TestHandleProgressPOSTPersists(t *testing.T) {
 	})
 }
 
+func TestHandleProgressAcceptsLegacyFlatShape(t *testing.T) {
+	withTempHome(t, func(_ string) {
+		body := map[string]interface{}{
+			"step":        "setup",
+			"company":     "Initech",
+			"description": "Workflow consulting",
+			"priority":    "Ship the first lane",
+		}
+		data, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/onboarding/progress", bytes.NewReader(data))
+		w := httptest.NewRecorder()
+		HandleProgress(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want %d\nbody: %s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		s, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if s.Partial == nil {
+			t.Fatal("Partial should not be nil after saving progress")
+		}
+		if got := s.Partial.Answers["setup"]["company"]; got != "Initech" {
+			t.Fatalf("expected company=Initech in legacy partial answers, got %#v", got)
+		}
+	})
+}
+
 // TestHandleProgressMissingStep verifies that a missing step field returns 400.
 func TestHandleProgressMissingStep(t *testing.T) {
 	withTempHome(t, func(_ string) {

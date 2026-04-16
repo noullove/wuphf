@@ -21,63 +21,77 @@ var (
 	headlessCodexCommandContext = exec.CommandContext
 	headlessCodexExecutablePath = os.Executable
 	headlessCodexRunTurn        = func(l *Launcher, ctx context.Context, slug, notification string, channel ...string) error {
-		if l == nil {
-			return fmt.Errorf("headlessCodexRunTurn: nil launcher")
-		}
-		// Per-agent dispatch: each office member picks its own runtime via
-		// ProviderBinding. Empty Kind falls back to the install-wide default
-		// (l.provider), which keeps existing installs running unchanged until
-		// users explicitly tag agents with providers.
-		kind := l.memberEffectiveProviderKind(slug)
-		switch kind {
-		case provider.KindOpenclaw:
-			// Openclaw agents are routed via routeOpenclawMentionsLoop → bridge
-			// BEFORE the headless queue. If a message ever reaches this path
-			// for an openclaw agent (misrouted enqueue, legacy code), skip
-			// running a local subprocess so we don't double-post the reply.
-			appendHeadlessCodexLog(slug, "skip: openclaw agent routed via bridge, not headless runner")
-			return nil
-		case provider.KindCodex:
-			return l.runHeadlessCodexTurn(ctx, slug, notification)
-		case provider.KindClaudeCode:
+		if l != nil && !l.usesCodexRuntime() {
 			return l.runHeadlessClaudeTurn(ctx, slug, notification)
-		default:
-			return fmt.Errorf("unknown provider kind %q for agent %q", kind, slug)
 		}
+		return l.runHeadlessCodexTurn(ctx, slug, notification, channel...)
 	}
 	// headlessWakeLeadFn is nil in production; override in tests to intercept lead wake-ups.
 	headlessWakeLeadFn func(l *Launcher, specialistSlug string)
 )
 
 var (
-	headlessCodexTurnTimeout      = 4 * time.Minute
-	headlessCodexStaleCancelAfter = 90 * time.Second
+	headlessCodexTurnTimeout              = 4 * time.Minute
+	headlessCodexOfficeLaunchTurnTimeout  = 10 * time.Minute
+	headlessCodexLocalWorktreeTurnTimeout = 12 * time.Minute
+	headlessCodexStaleCancelAfter         = 90 * time.Second
+	headlessCodexEnvVarsToStrip           = []string{
+		"OLDPWD",
+		"PWD",
+		"CODEX_THREAD_ID",
+		"CODEX_TUI_RECORD_SESSION",
+		"CODEX_TUI_SESSION_LOG_PATH",
+	}
 )
+
+const headlessCodexLocalWorktreeRetryLimit = 2
+const headlessCodexExternalActionRetryLimit = 1
 
 type headlessCodexTurn struct {
 	Prompt     string
 	Channel    string // channel slug (e.g. "dm-ceo", "general")
+	TaskID     string
+	Attempts   int
 	EnqueuedAt time.Time
 }
 
 type headlessCodexActiveTurn struct {
-	Turn      headlessCodexTurn
-	StartedAt time.Time
-	Cancel    context.CancelFunc
+	Turn              headlessCodexTurn
+	StartedAt         time.Time
+	Timeout           time.Duration
+	Cancel            context.CancelFunc
+	WorkspaceDir      string
+	WorkspaceSnapshot string
+}
+
+var headlessCodexWorkspaceStatusSnapshot = func(path string) string {
+	path = normalizeHeadlessWorkspaceDir(path)
+	if path == "" {
+		return ""
+	}
+	out, err := runGitOutput(path, "status", "--porcelain=v1", "-z")
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }
 
 func (l *Launcher) launchHeadlessCodex() error {
 	killStaleBroker()
+	killStaleHeadlessTaskRunners()
 	exec.Command("tmux", "-L", tmuxSocketName, "kill-session", "-t", l.sessionName).Run()
 
 	l.broker = NewBroker()
-	l.broker.runtimeProvider = l.provider
 	l.broker.packSlug = l.packSlug
+	l.broker.blankSlateLaunch = l.blankSlateLaunch
 	if err := l.broker.SetSessionMode(l.sessionMode, l.oneOnOne); err != nil {
 		return fmt.Errorf("set session mode: %w", err)
 	}
 	if err := l.broker.Start(); err != nil {
 		return fmt.Errorf("start broker: %w", err)
+	}
+	if err := writeOfficePIDFile(); err != nil {
+		return fmt.Errorf("write office pid: %w", err)
 	}
 
 	l.headlessCtx, l.headlessCancel = context.WithCancel(context.Background())
@@ -86,9 +100,8 @@ func (l *Launcher) launchHeadlessCodex() error {
 	go l.notifyAgentsLoop()
 	if !l.isOneOnOne() {
 		go l.notifyTaskActionsLoop()
-		if shouldPollNexNotifications() {
-			go l.pollNexNotificationsLoop()
-		}
+		go l.notifyOfficeChangesLoop()
+		go l.pollNexNotificationsLoop()
 		go l.watchdogSchedulerLoop()
 	}
 
@@ -105,23 +118,76 @@ func (l *Launcher) enqueueHeadlessCodexTurn(slug string, prompt string, channel 
 	if slug == "" || prompt == "" {
 		return
 	}
+	l.enqueueHeadlessCodexTurnRecord(slug, headlessCodexTurn{
+		Prompt:     prompt,
+		Channel:    ch,
+		TaskID:     headlessCodexTaskID(prompt),
+		EnqueuedAt: time.Now(),
+	})
+}
+
+func (l *Launcher) enqueueHeadlessCodexTurnRecord(slug string, turn headlessCodexTurn) {
+	slug = strings.TrimSpace(slug)
+	turn.Prompt = strings.TrimSpace(turn.Prompt)
+	turn.Channel = strings.TrimSpace(turn.Channel)
+	turn.TaskID = strings.TrimSpace(turn.TaskID)
+	if slug == "" || turn.Prompt == "" {
+		return
+	}
+	if turn.TaskID == "" {
+		turn.TaskID = headlessCodexTaskID(turn.Prompt)
+	}
+	if turn.EnqueuedAt.IsZero() {
+		turn.EnqueuedAt = time.Now()
+	}
 
 	var cancel context.CancelFunc
 	var staleAge time.Duration
 	startWorker := false
 
 	l.headlessMu.Lock()
+	urgentLeadTurn := l.headlessLeadTurnNeedsImmediateWakeLocked(slug, turn.Prompt)
+	if turn.TaskID != "" {
+		if active := l.headlessActive[slug]; active != nil && strings.TrimSpace(active.Turn.TaskID) == turn.TaskID {
+			if !(slug == l.officeLeadSlug() && urgentLeadTurn) && turn.Attempts <= active.Turn.Attempts {
+				l.headlessMu.Unlock()
+				if slug == l.officeLeadSlug() {
+					appendHeadlessCodexLog(slug, "queue-drop: lead already handling same task")
+				} else {
+					appendHeadlessCodexLog(slug, "queue-drop: agent already handling same task")
+				}
+				return
+			}
+		}
+		if pending := l.replaceDuplicateTaskTurnLocked(slug, turn); pending {
+			if !l.headlessWorkers[slug] {
+				l.headlessWorkers[slug] = true
+				startWorker = true
+			}
+			l.headlessMu.Unlock()
+			if slug == l.officeLeadSlug() {
+				appendHeadlessCodexLog(slug, "queue-replace: refreshed pending lead turn for same task")
+			} else {
+				appendHeadlessCodexLog(slug, "queue-replace: refreshed pending turn for same task")
+			}
+			if startWorker {
+				go l.runHeadlessCodexQueue(slug)
+			}
+			return
+		}
+	}
 	// For the lead (CEO) agent, suppress the notification if any other specialist
 	// is still active or has pending work. The lead should only step in when all
 	// parallel work is done — not when one specialist finishes while others are
 	// still running. This eliminates the race condition where CEO fires after the
 	// first specialist completes and redundantly re-routes to still-running agents.
-	if slug == l.officeLeadSlug() {
+	if slug == l.officeLeadSlug() && !urgentLeadTurn {
 		for workerSlug, queue := range l.headlessQueues {
 			if workerSlug == slug {
 				continue
 			}
 			if len(queue) > 0 {
+				l.headlessDeferredLead = &turn
 				l.headlessMu.Unlock()
 				appendHeadlessCodexLog(slug, "queue-hold: specialist still queued, deferring lead notification until all work lands")
 				return
@@ -132,6 +198,7 @@ func (l *Launcher) enqueueHeadlessCodexTurn(slug string, prompt string, channel 
 				continue
 			}
 			if active != nil {
+				l.headlessDeferredLead = &turn
 				l.headlessMu.Unlock()
 				appendHeadlessCodexLog(slug, "queue-hold: specialist still running, deferring lead notification until all work lands")
 				return
@@ -144,22 +211,31 @@ func (l *Launcher) enqueueHeadlessCodexTurn(slug string, prompt string, channel 
 	// turn is enough to catch the latest state; extras are dropped.
 	const leadMaxPending = 1
 	if slug == l.officeLeadSlug() && len(l.headlessQueues[slug]) >= leadMaxPending {
+		if urgentLeadTurn {
+			l.headlessQueues[slug][len(l.headlessQueues[slug])-1] = turn
+			if !l.headlessWorkers[slug] {
+				l.headlessWorkers[slug] = true
+				startWorker = true
+			}
+			l.headlessMu.Unlock()
+			appendHeadlessCodexLog(slug, "queue-replace: lead queue at cap, replacing pending turn with urgent task notification")
+			if startWorker {
+				go l.runHeadlessCodexQueue(slug)
+			}
+			return
+		}
 		l.headlessMu.Unlock()
 		appendHeadlessCodexLog(slug, "queue-drop: lead queue at cap, dropping redundant notification")
 		return
 	}
-	l.headlessQueues[slug] = append(l.headlessQueues[slug], headlessCodexTurn{
-		Prompt:     prompt,
-		Channel:    ch,
-		EnqueuedAt: time.Now(),
-	})
+	l.headlessQueues[slug] = append(l.headlessQueues[slug], turn)
 	if !l.headlessWorkers[slug] {
 		l.headlessWorkers[slug] = true
 		startWorker = true
 	}
 	if active := l.headlessActive[slug]; active != nil && active.Cancel != nil {
 		age := time.Since(active.StartedAt)
-		if age >= headlessCodexStaleCancelAfter {
+		if age >= l.headlessCodexStaleCancelAfterForTurn(active.Turn) {
 			cancel = active.Cancel
 			staleAge = age
 		}
@@ -176,14 +252,49 @@ func (l *Launcher) enqueueHeadlessCodexTurn(slug string, prompt string, channel 
 	}
 }
 
+func (l *Launcher) replaceDuplicateTaskTurnLocked(slug string, turn headlessCodexTurn) bool {
+	for i := range l.headlessQueues[slug] {
+		if strings.TrimSpace(l.headlessQueues[slug][i].TaskID) != turn.TaskID {
+			continue
+		}
+		l.headlessQueues[slug][i] = turn
+		return true
+	}
+	if slug == l.officeLeadSlug() && l.headlessDeferredLead != nil && strings.TrimSpace(l.headlessDeferredLead.TaskID) == turn.TaskID {
+		cp := turn
+		l.headlessDeferredLead = &cp
+		return true
+	}
+	return false
+}
+
+func (l *Launcher) headlessLeadTurnNeedsImmediateWakeLocked(slug, prompt string) bool {
+	if l == nil || l.broker == nil {
+		return false
+	}
+	if strings.TrimSpace(slug) != l.officeLeadSlug() {
+		return false
+	}
+	taskID := strings.TrimSpace(headlessCodexTaskID(prompt))
+	if taskID == "" {
+		return false
+	}
+	for _, task := range l.broker.AllTasks() {
+		if task.ID != taskID {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(task.Status))
+		review := strings.ToLower(strings.TrimSpace(task.ReviewState))
+		return status == "review" || review == "ready_for_review" || status == "blocked"
+	}
+	return false
+}
+
 func (l *Launcher) runHeadlessCodexQueue(slug string) {
 	for {
-		// beginHeadlessCodexTurn deletes headlessWorkers[slug] when the queue is
-		// empty, so the worker flag is self-clearing on normal exit. We check
-		// it after the panic-guarded body to decide whether to loop or exit.
 		func() {
 			defer recoverPanicTo("runHeadlessCodexQueue", fmt.Sprintf("slug=%s", slug))
-			turn, turnCtx, ok := l.beginHeadlessCodexTurn(slug)
+			turn, turnCtx, startedAt, timeout, ok := l.beginHeadlessCodexTurn(slug)
 			if !ok {
 				l.updateHeadlessProgress(slug, "idle", "idle", "waiting for work", headlessProgressMetrics{})
 				return
@@ -191,35 +302,166 @@ func (l *Launcher) runHeadlessCodexQueue(slug string) {
 			appendHeadlessCodexLatency(slug, fmt.Sprintf("stage=started queue_wait_ms=%d", time.Since(turn.EnqueuedAt).Milliseconds()))
 			l.updateHeadlessProgress(slug, "active", "queued", "queued work packet received", headlessProgressMetrics{})
 
-			// Set channel env so MCP server can register DM-specific tool sets
-			if turn.Channel != "" {
-				os.Setenv("WUPHF_CHANNEL", turn.Channel)
-			} else {
-				os.Unsetenv("WUPHF_CHANNEL")
-			}
 			err := headlessCodexRunTurn(l, turnCtx, slug, turn.Prompt, turn.Channel)
 			ctxErr := turnCtx.Err()
+			if err == nil {
+				l.headlessMu.Lock()
+				active := l.headlessActive[slug]
+				l.headlessMu.Unlock()
+				if ok, reason := l.headlessTurnCompletedDurably(slug, active); !ok {
+					appendHeadlessCodexLog(slug, "durability-error: "+reason)
+					err = errors.New(reason)
+				}
+			}
 			switch {
 			case err == nil:
 			case errors.Is(ctxErr, context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
-				appendHeadlessCodexLog(slug, fmt.Sprintf("error: headless codex turn timed out after %s", headlessCodexTurnTimeout))
-				l.updateHeadlessProgress(slug, "error", "error", fmt.Sprintf("turn timed out after %s", headlessCodexTurnTimeout), headlessProgressMetrics{})
+				appendHeadlessCodexLog(slug, fmt.Sprintf("error: headless codex turn timed out after %s", timeout))
+				l.updateHeadlessProgress(slug, "error", "error", fmt.Sprintf("turn timed out after %s", timeout), headlessProgressMetrics{})
+				l.recoverTimedOutHeadlessTurn(slug, turn, startedAt, timeout)
 			case errors.Is(ctxErr, context.Canceled) || errors.Is(err, context.Canceled):
 				appendHeadlessCodexLog(slug, "error: headless codex turn cancelled so newer queued work can run")
 				l.updateHeadlessProgress(slug, "active", "queued", "restarting on newer queued work", headlessProgressMetrics{})
 			default:
 				appendHeadlessCodexLog(slug, fmt.Sprintf("error: %v", err))
 				l.updateHeadlessProgress(slug, "error", "error", truncate(err.Error(), 180), headlessProgressMetrics{})
+				l.recoverFailedHeadlessTurn(slug, turn, startedAt, err.Error())
 			}
 			l.finishHeadlessTurn(slug)
 		}()
 		l.headlessMu.Lock()
-		running := l.headlessWorkers[slug]
+		_, stillRunning := l.headlessWorkers[slug]
 		l.headlessMu.Unlock()
-		if !running {
+		if !stillRunning {
 			return
 		}
 	}
+}
+
+func taskHasDurableCompletionState(task *teamTask) bool {
+	if task == nil {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(task.Status))
+	review := strings.ToLower(strings.TrimSpace(task.ReviewState))
+	switch status {
+	case "done", "completed", "blocked", "cancelled", "canceled", "review":
+		return true
+	}
+	switch review {
+	case "ready_for_review", "approved":
+		return true
+	}
+	return false
+}
+
+func (l *Launcher) headlessTurnCompletedDurably(slug string, active *headlessCodexActiveTurn) (bool, string) {
+	if l == nil || l.broker == nil || active == nil {
+		return true, ""
+	}
+	task := l.timedOutTaskForTurn(slug, active.Turn)
+	requiresDurableGuard := codingAgentSlugs[slug]
+	requiresExternalExecution := taskRequiresRealExternalExecution(task)
+	if task != nil && strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+		requiresDurableGuard = true
+	}
+	if requiresExternalExecution {
+		requiresDurableGuard = true
+	}
+	if !requiresDurableGuard {
+		return true, ""
+	}
+	if task != nil && requiresExternalExecution {
+		executed, attempted := l.taskHasExternalWorkflowEvidenceSince(task, active.StartedAt)
+		if taskHasDurableCompletionState(task) {
+			status := strings.ToLower(strings.TrimSpace(task.Status))
+			switch status {
+			case "done", "completed", "review":
+				if executed {
+					return true, ""
+				}
+				return false, fmt.Sprintf("external-action turn for #%s marked %s/%s without recorded external execution evidence", task.ID, strings.TrimSpace(task.Status), strings.TrimSpace(task.ReviewState))
+			case "blocked", "cancelled", "canceled":
+				if attempted {
+					return true, ""
+				}
+				return false, fmt.Sprintf("external-action turn for #%s moved to %s without recorded external workflow evidence", task.ID, strings.TrimSpace(task.Status))
+			default:
+				if executed {
+					return true, ""
+				}
+			}
+		}
+		if executed {
+			return true, ""
+		}
+	}
+	if task != nil && taskHasDurableCompletionState(task) {
+		return true, ""
+	}
+	if l.agentPostedSubstantiveMessageSince(slug, active.StartedAt) {
+		return true, ""
+	}
+	if workspaceDir := strings.TrimSpace(active.WorkspaceDir); workspaceDir != "" {
+		current := headlessCodexWorkspaceStatusSnapshot(workspaceDir)
+		if strings.TrimSpace(active.WorkspaceSnapshot) != "" && current != active.WorkspaceSnapshot {
+			if task != nil {
+				return false, fmt.Sprintf("coding turn for #%s changed workspace %s but left task %s/%s without durable completion evidence", task.ID, workspaceDir, strings.TrimSpace(task.Status), strings.TrimSpace(task.ReviewState))
+			}
+			return false, fmt.Sprintf("coding turn changed workspace %s without durable completion evidence", workspaceDir)
+		}
+	}
+	if task != nil {
+		if requiresExternalExecution {
+			return false, fmt.Sprintf("external-action turn for #%s completed without durable task state or external workflow evidence", task.ID)
+		}
+		return false, fmt.Sprintf("coding turn for #%s completed without durable task state or completion evidence", task.ID)
+	}
+	if requiresExternalExecution {
+		return false, fmt.Sprintf("external-action turn by @%s completed without durable task state or external workflow evidence", slug)
+	}
+	return false, fmt.Sprintf("coding turn by @%s completed without durable task state or completion evidence", slug)
+}
+
+func (l *Launcher) taskHasExternalWorkflowEvidenceSince(task *teamTask, startedAt time.Time) (executed bool, attempted bool) {
+	if l == nil || l.broker == nil || task == nil {
+		return false, false
+	}
+	channel := normalizeChannelSlug(task.Channel)
+	owner := strings.TrimSpace(task.Owner)
+	for _, action := range l.broker.Actions() {
+		kind := strings.ToLower(strings.TrimSpace(action.Kind))
+		switch kind {
+		case "external_workflow_executed",
+			"external_workflow_failed",
+			"external_workflow_rate_limited",
+			"external_action_executed",
+			"external_action_failed":
+		default:
+			continue
+		}
+		if channel != "" && normalizeChannelSlug(action.Channel) != channel {
+			continue
+		}
+		if owner != "" {
+			actor := strings.TrimSpace(action.Actor)
+			if actor != "" && actor != owner && actor != "scheduler" {
+				continue
+			}
+		}
+		when, err := time.Parse(time.RFC3339, strings.TrimSpace(action.CreatedAt))
+		if err != nil {
+			when, err = time.Parse(time.RFC3339Nano, strings.TrimSpace(action.CreatedAt))
+		}
+		if err == nil && !when.Add(time.Second).After(startedAt) {
+			continue
+		}
+		attempted = true
+		if kind == "external_workflow_executed" || kind == "external_action_executed" {
+			executed = true
+		}
+	}
+	return executed, attempted
 }
 
 func (l *Launcher) finishHeadlessTurn(slug string) {
@@ -229,6 +471,7 @@ func (l *Launcher) finishHeadlessTurn(slug string) {
 	}
 	delete(l.headlessActive, slug)
 	lead := l.officeLeadSlug()
+	var deferredLead *headlessCodexTurn
 	// Determine if this was a specialist finishing (not the lead), and if so whether
 	// any other specialists are still active or queued. If the slate is clear, we
 	// need to wake the lead so it can react to the specialist's completion messages.
@@ -262,8 +505,18 @@ func (l *Launcher) finishHeadlessTurn(slug string) {
 	if shouldWakeLead && len(l.headlessQueues[lead]) > 0 {
 		shouldWakeLead = false
 	}
+	if shouldWakeLead && l.headlessDeferredLead != nil {
+		turn := *l.headlessDeferredLead
+		l.headlessDeferredLead = nil
+		deferredLead = &turn
+		shouldWakeLead = false
+	}
 	l.headlessMu.Unlock()
 
+	if deferredLead != nil {
+		l.enqueueHeadlessCodexTurn(lead, deferredLead.Prompt, deferredLead.Channel)
+		return
+	}
 	if shouldWakeLead {
 		if headlessWakeLeadFn != nil {
 			headlessWakeLeadFn(l, slug)
@@ -309,13 +562,242 @@ func (l *Launcher) wakeLeadAfterSpecialist(specialistSlug string) {
 		break
 	}
 	if lastMsg == nil {
+		if action, task, ok := l.latestLeadWakeTaskAction(specialistSlug); ok {
+			content := l.taskNotificationContent(action, task)
+			appendHeadlessCodexLog(lead, fmt.Sprintf("wake-lead: re-delivering task handoff from @%s (%s)", specialistSlug, task.ID))
+			l.sendTaskUpdate(target, action, task, content)
+		}
 		return
 	}
 	appendHeadlessCodexLog(lead, fmt.Sprintf("wake-lead: re-delivering specialist completion from @%s (msg %s)", specialistSlug, lastMsg.ID))
 	l.sendChannelUpdate(target, *lastMsg)
 }
 
-func (l *Launcher) beginHeadlessCodexTurn(slug string) (headlessCodexTurn, context.Context, bool) {
+func (l *Launcher) latestLeadWakeTaskAction(specialistSlug string) (officeActionLog, teamTask, bool) {
+	if l == nil || l.broker == nil {
+		return officeActionLog{}, teamTask{}, false
+	}
+	actions := l.broker.Actions()
+	for i := len(actions) - 1; i >= 0; i-- {
+		action := actions[i]
+		if strings.TrimSpace(action.Actor) != specialistSlug {
+			continue
+		}
+		if action.Kind != "task_updated" && action.Kind != "task_unblocked" {
+			continue
+		}
+		task, ok := l.taskForAction(action)
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(task.Status)) {
+		case "done", "review", "blocked":
+			return action, task, true
+		}
+	}
+	return officeActionLog{}, teamTask{}, false
+}
+
+func headlessCodexTaskID(prompt string) string {
+	prefixes := []string{"#task-", "#blank-slate-"}
+	for _, prefix := range prefixes {
+		idx := strings.Index(prompt, prefix)
+		if idx == -1 {
+			continue
+		}
+		start := idx + 1
+		end := start
+		for end < len(prompt) {
+			ch := prompt[end]
+			if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' {
+				end++
+				continue
+			}
+			break
+		}
+		return strings.TrimSpace(prompt[start:end])
+	}
+	return ""
+}
+
+func (l *Launcher) agentPostedSubstantiveMessageSince(slug string, startedAt time.Time) bool {
+	if l == nil || l.broker == nil {
+		return false
+	}
+	for _, msg := range l.broker.AllMessages() {
+		if msg.From != slug {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" || strings.HasPrefix(content, "[STATUS]") {
+			continue
+		}
+		when, err := time.Parse(time.RFC3339, msg.Timestamp)
+		if err != nil {
+			continue
+		}
+		if when.Add(time.Second).After(startedAt) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *Launcher) timedOutTaskForTurn(slug string, turn headlessCodexTurn) *teamTask {
+	if l == nil || l.broker == nil {
+		return nil
+	}
+	if id := strings.TrimSpace(turn.TaskID); id != "" {
+		for _, task := range l.broker.AllTasks() {
+			if task.ID == id {
+				cp := task
+				return &cp
+			}
+		}
+	}
+	return l.agentActiveTask(slug)
+}
+
+func (l *Launcher) shouldRetryTimedOutHeadlessTurn(task *teamTask, turn headlessCodexTurn) bool {
+	if task == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+		return false
+	}
+	return turn.Attempts < headlessCodexLocalWorktreeRetryLimit
+}
+
+func headlessTimedOutRetryPrompt(slug string, prompt string, timeout time.Duration, attempt int, external bool) string {
+	note := fmt.Sprintf("Previous attempt by @%s timed out after %s without a durable task handoff. Retry #%d.", strings.TrimSpace(slug), timeout, attempt)
+	if external {
+		note += " This is a live external-action task. Do the smallest useful live external step now. If Slack target discovery is already known, use it. If the first live Slack target fails, retry once against the resolved writable target; if that still fails, pivot immediately to the smallest useful live Notion or Drive action and report the exact blocker. Do not write repo docs or planning artifacts as substitutes."
+	} else {
+		note += " For this retry, move immediately from claim/status into targeted file reads and edits, then leave the task in review/done/blocked before you stop. If you cannot ship the whole slice, ship the smallest runnable sub-slice and mark that state explicitly."
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return note
+	}
+	return strings.TrimSpace(prompt) + "\n\n" + note
+}
+
+func headlessFailedRetryPrompt(slug string, prompt string, detail string, attempt int, external bool) string {
+	note := fmt.Sprintf("Previous attempt by @%s failed before a durable task handoff. Retry #%d.", strings.TrimSpace(slug), attempt)
+	if trimmed := strings.TrimSpace(detail); trimmed != "" {
+		note += " Last error: " + truncate(trimmed, 180) + "."
+	}
+	if external {
+		note += " This is a live external-action task. Do the smallest useful live external step now. Do not keep discovering or drafting repo substitutes. If the first live Slack target fails, retry once against the resolved writable target; if that still fails, pivot immediately to the smallest useful live Notion or Drive action and report the exact blocker."
+	} else {
+		note += " For this retry, move immediately from claim/status into targeted file reads and edits, then leave the task in review/done/blocked before you stop. If you cannot ship the whole slice, ship the smallest runnable sub-slice and mark that state explicitly."
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return note
+	}
+	return strings.TrimSpace(prompt) + "\n\n" + note
+}
+
+func shouldRetryHeadlessTurn(task *teamTask, turn headlessCodexTurn) bool {
+	if task == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+		return turn.Attempts < headlessCodexLocalWorktreeRetryLimit
+	}
+	if taskRequiresRealExternalExecution(task) {
+		return turn.Attempts < headlessCodexExternalActionRetryLimit
+	}
+	return false
+}
+
+func (l *Launcher) recoverTimedOutHeadlessTurn(slug string, turn headlessCodexTurn, startedAt time.Time, timeout time.Duration) {
+	if l == nil || l.broker == nil {
+		return
+	}
+	task := l.timedOutTaskForTurn(slug, turn)
+	if task == nil || strings.TrimSpace(task.ID) == "" {
+		appendHeadlessCodexLog(slug, "timeout-recovery: no matching task found to block")
+		return
+	}
+	if l.timedOutTurnAlreadyRecovered(task, slug, startedAt) {
+		appendHeadlessCodexLog(slug, fmt.Sprintf("timeout-recovery: %s already produced durable progress; leaving task state unchanged", task.ID))
+		return
+	}
+	if shouldRetryHeadlessTurn(task, turn) {
+		retryTurn := turn
+		retryTurn.Attempts++
+		retryTurn.EnqueuedAt = time.Now()
+		retryTurn.Prompt = headlessTimedOutRetryPrompt(slug, turn.Prompt, timeout, retryTurn.Attempts, taskRequiresRealExternalExecution(task))
+		limit := headlessCodexLocalWorktreeRetryLimit
+		if taskRequiresRealExternalExecution(task) {
+			limit = headlessCodexExternalActionRetryLimit
+		}
+		appendHeadlessCodexLog(slug, fmt.Sprintf("timeout-recovery: requeueing %s after silent timeout (attempt %d/%d)", task.ID, retryTurn.Attempts, limit))
+		l.enqueueHeadlessCodexTurnRecord(slug, retryTurn)
+		return
+	}
+	reason := fmt.Sprintf("Automatic timeout recovery: @%s timed out after %s before posting a substantive update. Requeue, retry, or reassign from here.", slug, timeout)
+	if _, changed, err := l.broker.BlockTask(task.ID, slug, reason); err != nil {
+		appendHeadlessCodexLog(slug, fmt.Sprintf("timeout-recovery-error: could not block %s: %v", task.ID, err))
+		return
+	} else if changed {
+		appendHeadlessCodexLog(slug, fmt.Sprintf("timeout-recovery: blocked %s after empty timeout", task.ID))
+	}
+}
+
+func (l *Launcher) recoverFailedHeadlessTurn(slug string, turn headlessCodexTurn, startedAt time.Time, detail string) {
+	if l == nil || l.broker == nil {
+		return
+	}
+	task := l.timedOutTaskForTurn(slug, turn)
+	if task == nil || strings.TrimSpace(task.ID) == "" {
+		appendHeadlessCodexLog(slug, "error-recovery: no matching task found to recover")
+		return
+	}
+	if l.timedOutTurnAlreadyRecovered(task, slug, startedAt) {
+		appendHeadlessCodexLog(slug, fmt.Sprintf("error-recovery: %s already produced durable progress; leaving task state unchanged", task.ID))
+		return
+	}
+	if shouldRetryHeadlessTurn(task, turn) {
+		retryTurn := turn
+		retryTurn.Attempts++
+		retryTurn.EnqueuedAt = time.Now()
+		retryTurn.Prompt = headlessFailedRetryPrompt(slug, turn.Prompt, detail, retryTurn.Attempts, taskRequiresRealExternalExecution(task))
+		limit := headlessCodexLocalWorktreeRetryLimit
+		if taskRequiresRealExternalExecution(task) {
+			limit = headlessCodexExternalActionRetryLimit
+		}
+		appendHeadlessCodexLog(slug, fmt.Sprintf("error-recovery: requeueing %s after failed turn (attempt %d/%d)", task.ID, retryTurn.Attempts, limit))
+		l.enqueueHeadlessCodexTurnRecord(slug, retryTurn)
+		return
+	}
+	trimmed := strings.TrimSpace(detail)
+	if trimmed == "" {
+		trimmed = "unknown headless codex failure"
+	}
+	reason := fmt.Sprintf("Automatic error recovery: @%s failed before a durable task handoff. Last error: %s. Requeue, retry, or reassign from here.", slug, truncate(trimmed, 220))
+	if _, changed, err := l.broker.BlockTask(task.ID, slug, reason); err != nil {
+		appendHeadlessCodexLog(slug, fmt.Sprintf("error-recovery-error: could not block %s: %v", task.ID, err))
+		return
+	} else if changed {
+		appendHeadlessCodexLog(slug, fmt.Sprintf("error-recovery: blocked %s after failed turn", task.ID))
+	}
+}
+
+func (l *Launcher) timedOutTurnAlreadyRecovered(task *teamTask, slug string, startedAt time.Time) bool {
+	if task == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+		status := strings.ToLower(strings.TrimSpace(task.Status))
+		review := strings.ToLower(strings.TrimSpace(task.ReviewState))
+		return status == "done" || status == "review" || status == "blocked" ||
+			review == "ready_for_review" || review == "approved"
+	}
+	return l.agentPostedSubstantiveMessageSince(slug, startedAt)
+}
+
+func (l *Launcher) beginHeadlessCodexTurn(slug string) (headlessCodexTurn, context.Context, time.Time, time.Duration, bool) {
 	l.headlessMu.Lock()
 	defer l.headlessMu.Unlock()
 
@@ -327,7 +809,7 @@ func (l *Launcher) beginHeadlessCodexTurn(slug string) (headlessCodexTurn, conte
 		// assuming the current one will pick up the new item.
 		delete(l.headlessWorkers, slug)
 		delete(l.headlessQueues, slug)
-		return headlessCodexTurn{}, nil, false
+		return headlessCodexTurn{}, nil, time.Time{}, 0, false
 	}
 
 	turn := queue[0]
@@ -341,21 +823,67 @@ func (l *Launcher) beginHeadlessCodexTurn(slug string) (headlessCodexTurn, conte
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	turnCtx, cancel := context.WithTimeout(baseCtx, headlessCodexTurnTimeout)
-	l.headlessActive[slug] = &headlessCodexActiveTurn{
-		Turn:      turn,
-		StartedAt: time.Now(),
-		Cancel:    cancel,
+	timeout := l.headlessCodexTurnTimeoutForTurn(turn)
+	turnCtx, cancel := context.WithTimeout(baseCtx, timeout)
+	startedAt := time.Now()
+	workspaceDir := ""
+	if worktreeDir := l.headlessTaskWorkspaceDir(slug); worktreeDir != "" {
+		workspaceDir = worktreeDir
+	} else if codingAgentSlugs[slug] {
+		workspaceDir = normalizeHeadlessWorkspaceDir(l.cwd)
 	}
-	return turn, turnCtx, true
+	l.headlessActive[slug] = &headlessCodexActiveTurn{
+		Turn:              turn,
+		StartedAt:         startedAt,
+		Timeout:           timeout,
+		Cancel:            cancel,
+		WorkspaceDir:      workspaceDir,
+		WorkspaceSnapshot: headlessCodexWorkspaceStatusSnapshot(workspaceDir),
+	}
+	return turn, turnCtx, startedAt, timeout, true
 }
 
-func (l *Launcher) runHeadlessCodexTurn(ctx context.Context, slug string, notification string) error {
+func (l *Launcher) headlessCodexTurnTimeoutForTurn(turn headlessCodexTurn) time.Duration {
+	if task := l.timedOutTaskForTurn("", turn); task != nil {
+		if strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+			return headlessCodexLocalWorktreeTurnTimeout
+		}
+		if strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "office") &&
+			strings.EqualFold(strings.TrimSpace(task.TaskType), "launch") {
+			return headlessCodexOfficeLaunchTurnTimeout
+		}
+	}
+	return headlessCodexTurnTimeout
+}
+
+func (l *Launcher) headlessCodexStaleCancelAfterForTurn(turn headlessCodexTurn) time.Duration {
+	if task := l.timedOutTaskForTurn("", turn); task != nil {
+		if strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+			return l.headlessCodexTurnTimeoutForTurn(turn)
+		}
+		if strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "office") &&
+			strings.EqualFold(strings.TrimSpace(task.TaskType), "launch") {
+			return l.headlessCodexTurnTimeoutForTurn(turn)
+		}
+	}
+	return headlessCodexStaleCancelAfter
+}
+
+func (l *Launcher) runHeadlessCodexTurn(ctx context.Context, slug string, notification string, channel ...string) error {
 	if _, err := headlessCodexLookPath("codex"); err != nil {
 		return fmt.Errorf("codex not found: %w", err)
 	}
 	if l == nil || l.broker == nil {
 		return fmt.Errorf("broker is not running")
+	}
+
+	workspaceDir := strings.TrimSpace(l.cwd)
+	if worktreeDir := l.headlessTaskWorkspaceDir(slug); worktreeDir != "" {
+		workspaceDir = worktreeDir
+	}
+	workspaceDir = normalizeHeadlessWorkspaceDir(workspaceDir)
+	if workspaceDir == "" {
+		workspaceDir = "."
 	}
 
 	overrides, err := l.buildCodexOfficeConfigOverrides(slug)
@@ -364,14 +892,19 @@ func (l *Launcher) runHeadlessCodexTurn(ctx context.Context, slug string, notifi
 	}
 
 	args := make([]string, 0, 16+len(overrides)*2)
-	if l.unsafe {
+	// Nested Codex local-worktree turns need full bypass here. The child Codex
+	// sandbox rejects both apply_patch and shell writes even with
+	// workspace-write, which leaves coding tasks permanently unable to land
+	// edits. Keep office/non-editing turns on workspace-write.
+	if l.unsafe || l.headlessCodexNeedsDangerousBypass(slug) {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	} else {
 		args = append(args, "-a", "never", "-s", "workspace-write")
 	}
+	args = append(args, "--disable", "plugins")
 	args = append(args,
 		"exec",
-		"-C", l.cwd,
+		"-C", workspaceDir,
 		"--skip-git-repo-check",
 		"--ephemeral",
 		"--color", "never",
@@ -386,15 +919,13 @@ func (l *Launcher) runHeadlessCodexTurn(ctx context.Context, slug string, notifi
 	args = append(args, "-")
 
 	cmd := headlessCodexCommandContext(ctx, "codex", args...)
-	cmd.Dir = l.cwd
-	cmd.Env = l.buildHeadlessCodexEnv(slug)
-	stdinPayload := notification
-	memoryCtx, memoryCancel := context.WithTimeout(ctx, 2*time.Second)
-	if brief := fetchScopedMemoryBrief(memoryCtx, slug, notification, l.broker); brief != "" {
-		stdinPayload = brief + "\n\n" + notification
+	cmd.Dir = workspaceDir
+	cmd.Env = l.buildHeadlessCodexEnv(slug, workspaceDir, firstNonEmpty(channel...))
+	if workspaceDir != strings.TrimSpace(l.cwd) {
+		cmd.Env = append(cmd.Env, "WUPHF_WORKTREE_PATH="+workspaceDir)
 	}
-	memoryCancel()
-	cmd.Stdin = strings.NewReader(buildHeadlessCodexPrompt(l.buildPrompt(slug), stdinPayload))
+	cmd.Stdin = strings.NewReader(buildHeadlessCodexPrompt(l.buildPrompt(slug), notification))
+	configureHeadlessProcess(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -426,8 +957,20 @@ func (l *Launcher) runHeadlessCodexTurn(ctx context.Context, slug string, notifi
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
+		pw.Close()
 		return err
 	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			terminateHeadlessProcess(cmd)
+			_ = stdout.Close()
+			_ = pw.CloseWithError(ctx.Err())
+		case <-done:
+		}
+	}()
 
 	startedAt := time.Now()
 	metrics := headlessProgressMetrics{
@@ -518,7 +1061,7 @@ func (l *Launcher) runHeadlessCodexTurn(ctx context.Context, slug string, notifi
 		summary = "reply ready · " + summary
 	}
 	l.updateHeadlessProgress(slug, "idle", "idle", summary, metrics)
-	if l.broker != nil {
+	if l.broker != nil && (result.Usage.InputTokens != 0 || result.Usage.OutputTokens != 0 || result.Usage.CacheReadTokens != 0 || result.Usage.CacheCreationTokens != 0 || result.Usage.CostUSD != 0) {
 		l.broker.RecordAgentUsage(slug, config.ResolveCodexModel(l.cwd), result.Usage)
 	}
 	if text := strings.TrimSpace(firstNonEmpty(result.FinalMessage, result.LastPlainLine)); text != "" {
@@ -527,45 +1070,206 @@ func (l *Launcher) runHeadlessCodexTurn(ctx context.Context, slug string, notifi
 	return nil
 }
 
-func (l *Launcher) buildHeadlessCodexEnv(slug string) []string {
-	env := os.Environ()
-	env = append(env,
-		"WUPHF_AGENT_SLUG="+slug,
-		"WUPHF_BROKER_TOKEN="+l.broker.Token(),
-		"WUPHF_HEADLESS_PROVIDER=codex",
-		"WUPHF_MEMORY_BACKEND="+config.ResolveMemoryBackend(""),
-	)
+func (l *Launcher) headlessCodexNeedsDangerousBypass(slug string) bool {
+	if l == nil || l.broker == nil {
+		return false
+	}
+	task := l.agentActiveTask(slug)
+	if task == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree")
+}
+
+func (l *Launcher) buildHeadlessCodexEnv(slug string, workspaceDir string, channel string) []string {
+	env := stripEnvKeys(os.Environ(), headlessCodexEnvVarsToStrip)
+	if workspaceDir = normalizeHeadlessWorkspaceDir(workspaceDir); workspaceDir != "" {
+		env = setEnvValue(env, "PWD", workspaceDir)
+	}
+	if codexHome := prepareHeadlessCodexHome(); codexHome != "" {
+		// Use the isolated runtime home for the headless Codex process so it
+		// doesn't inherit user-global ~/.agents skills from the interactive shell.
+		env = setEnvValue(env, "HOME", codexHome)
+		_ = os.MkdirAll(filepath.Join(codexHome, "plugins", "cache"), 0o755)
+		env = setEnvValue(env, "CODEX_HOME", codexHome)
+	} else if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		env = setEnvValue(env, "HOME", home)
+	}
+	if base := l.headlessCodexWorkspaceCacheDir(workspaceDir); base != "" {
+		goCache := filepath.Join(base, "go-build", strings.TrimSpace(slug))
+		goTmp := filepath.Join(base, "go-tmp", strings.TrimSpace(slug))
+		_ = os.MkdirAll(goCache, 0o755)
+		_ = os.MkdirAll(goTmp, 0o755)
+		env = setEnvValue(env, "GOCACHE", goCache)
+		env = setEnvValue(env, "GOTMPDIR", goTmp)
+	}
+	env = setEnvValue(env, "WUPHF_AGENT_SLUG", slug)
+	if channel = strings.TrimSpace(channel); channel != "" {
+		env = setEnvValue(env, "WUPHF_CHANNEL", channel)
+	}
+	env = setEnvValue(env, "WUPHF_BROKER_TOKEN", l.broker.Token())
+	env = setEnvValue(env, "WUPHF_BROKER_BASE_URL", l.BrokerBaseURL())
+	env = setEnvValue(env, "WUPHF_HEADLESS_PROVIDER", "codex")
 	if config.ResolveNoNex() {
-		env = append(env, "WUPHF_NO_NEX=1")
+		env = setEnvValue(env, "WUPHF_NO_NEX", "1")
 	}
 	if l.isOneOnOne() {
-		env = append(env,
-			"WUPHF_ONE_ON_ONE=1",
-			"WUPHF_ONE_ON_ONE_AGENT="+l.oneOnOneAgent(),
-		)
+		env = setEnvValue(env, "WUPHF_ONE_ON_ONE", "1")
+		env = setEnvValue(env, "WUPHF_ONE_ON_ONE_AGENT", l.oneOnOneAgent())
 	}
 	if secret := strings.TrimSpace(config.ResolveOneSecret()); secret != "" {
-		env = append(env, "ONE_SECRET="+secret)
+		env = setEnvValue(env, "ONE_SECRET", secret)
 	}
 	if identity := strings.TrimSpace(config.ResolveOneIdentity()); identity != "" {
-		env = append(env, "ONE_IDENTITY="+identity)
+		env = setEnvValue(env, "ONE_IDENTITY", identity)
 		if identityType := strings.TrimSpace(config.ResolveOneIdentityType()); identityType != "" {
-			env = append(env, "ONE_IDENTITY_TYPE="+identityType)
+			env = setEnvValue(env, "ONE_IDENTITY_TYPE", identityType)
 		}
 	}
 	if apiKey := strings.TrimSpace(config.ResolveAPIKey("")); apiKey != "" {
-		env = append(env,
-			"WUPHF_API_KEY="+apiKey,
-			"NEX_API_KEY="+apiKey,
-		)
+		env = setEnvValue(env, "WUPHF_API_KEY", apiKey)
+		env = setEnvValue(env, "NEX_API_KEY", apiKey)
 	}
-	if apiKey := strings.TrimSpace(config.ResolveOpenAIAPIKey()); apiKey != "" {
-		env = append(env, "OPENAI_API_KEY="+apiKey)
-	}
-	if apiKey := strings.TrimSpace(config.ResolveAnthropicAPIKey()); apiKey != "" {
-		env = append(env, "ANTHROPIC_API_KEY="+apiKey)
+	if openAIKey := strings.TrimSpace(config.ResolveOpenAIAPIKey()); openAIKey != "" {
+		env = setEnvValue(env, "WUPHF_OPENAI_API_KEY", openAIKey)
+		env = setEnvValue(env, "OPENAI_API_KEY", openAIKey)
 	}
 	return env
+}
+
+func headlessCodexHomeDir() string {
+	if raw := strings.TrimSpace(os.Getenv("CODEX_HOME")); raw != "" {
+		if abs, err := filepath.Abs(raw); err == nil && strings.TrimSpace(abs) != "" {
+			return abs
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".codex")
+}
+
+func headlessCodexGlobalHomeDir() string {
+	if raw := strings.TrimSpace(os.Getenv("WUPHF_GLOBAL_HOME")); raw != "" {
+		if abs, err := filepath.Abs(raw); err == nil && strings.TrimSpace(abs) != "" {
+			return abs
+		}
+		return raw
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(home)
+}
+
+func headlessCodexRuntimeHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".wuphf", "codex-headless")
+}
+
+func prepareHeadlessCodexHome() string {
+	runtimeHome := normalizeHeadlessWorkspaceDir(headlessCodexRuntimeHomeDir())
+	if runtimeHome == "" {
+		return headlessCodexHomeDir()
+	}
+	if err := os.MkdirAll(runtimeHome, 0o755); err != nil {
+		return headlessCodexHomeDir()
+	}
+	sourceHome := normalizeHeadlessWorkspaceDir(filepath.Join(headlessCodexGlobalHomeDir(), ".codex"))
+	if sourceHome == "" {
+		sourceHome = normalizeHeadlessWorkspaceDir(headlessCodexHomeDir())
+	}
+	if sourceHome != "" && sourceHome != runtimeHome {
+		copyHeadlessCodexHomeFile(sourceHome, runtimeHome, "auth.json", 0o600)
+	}
+	if userHome := strings.TrimSpace(headlessCodexGlobalHomeDir()); userHome != "" {
+		copyHeadlessCodexHomeFile(userHome, runtimeHome, filepath.Join(".one", "config.json"), 0o600)
+		copyHeadlessCodexHomeFile(userHome, runtimeHome, filepath.Join(".one", "update-check.json"), 0o600)
+	}
+	return runtimeHome
+}
+
+func copyHeadlessCodexHomeFile(sourceHome string, runtimeHome string, rel string, mode os.FileMode) {
+	if strings.TrimSpace(sourceHome) == "" || strings.TrimSpace(runtimeHome) == "" || strings.TrimSpace(rel) == "" {
+		return
+	}
+	sourcePath := filepath.Join(sourceHome, filepath.FromSlash(rel))
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return
+	}
+	destPath := filepath.Join(runtimeHome, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(destPath, data, mode)
+}
+
+func normalizeHeadlessWorkspaceDir(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(path); err == nil && strings.TrimSpace(abs) != "" {
+		path = abs
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil && strings.TrimSpace(real) != "" {
+		path = real
+	}
+	return path
+}
+
+func (l *Launcher) headlessCodexWorkspaceCacheDir(workspaceDir string) string {
+	base := strings.TrimSpace(workspaceDir)
+	if base == "" {
+		base = strings.TrimSpace(l.cwd)
+	}
+	if base == "" {
+		if wd, err := os.Getwd(); err == nil {
+			base = wd
+		}
+	}
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, ".wuphf", "cache")
+}
+
+func (l *Launcher) headlessTaskWorkspaceDir(slug string) string {
+	if l == nil || l.broker == nil {
+		return ""
+	}
+	task := l.agentActiveTask(slug)
+	if task == nil {
+		return ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(task.ExecutionMode), "local_worktree") {
+		return ""
+	}
+	if path := strings.TrimSpace(task.WorktreePath); path != "" {
+		return path
+	}
+	if strings.TrimSpace(task.ID) == "" {
+		return ""
+	}
+	path, _, err := prepareTaskWorktree(task.ID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(path)
 }
 
 func (l *Launcher) buildCodexOfficeConfigOverrides(slug string) ([]string, error) {
@@ -576,20 +1280,10 @@ func (l *Launcher) buildCodexOfficeConfigOverrides(slug string) ([]string, error
 	wuphfEnvVars := []string{
 		"WUPHF_AGENT_SLUG",
 		"WUPHF_BROKER_TOKEN",
-		"HOME",
-		"WUPHF_MEMORY_BACKEND",
+		"WUPHF_BROKER_BASE_URL",
 	}
 	if config.ResolveNoNex() {
 		wuphfEnvVars = append(wuphfEnvVars, "WUPHF_NO_NEX")
-	}
-	if apiKey := strings.TrimSpace(config.ResolveAPIKey("")); apiKey != "" {
-		wuphfEnvVars = append(wuphfEnvVars, "WUPHF_API_KEY", "NEX_API_KEY")
-	}
-	if apiKey := strings.TrimSpace(config.ResolveOpenAIAPIKey()); apiKey != "" {
-		wuphfEnvVars = append(wuphfEnvVars, "OPENAI_API_KEY")
-	}
-	if apiKey := strings.TrimSpace(config.ResolveAnthropicAPIKey()); apiKey != "" {
-		wuphfEnvVars = append(wuphfEnvVars, "ANTHROPIC_API_KEY")
 	}
 	if l.isOneOnOne() {
 		wuphfEnvVars = append(wuphfEnvVars,
@@ -611,6 +1305,18 @@ func (l *Launcher) buildCodexOfficeConfigOverrides(slug string) ([]string, error
 		fmt.Sprintf(`mcp_servers.wuphf-office.command=%s`, tomlQuote(wuphfBinary)),
 		`mcp_servers.wuphf-office.args=["mcp-team"]`,
 		fmt.Sprintf(`mcp_servers.wuphf-office.env_vars=%s`, tomlStringArray(wuphfEnvVars)),
+	}
+
+	if !config.ResolveNoNex() {
+		if nexMCP, err := headlessCodexLookPath("nex-mcp"); err == nil {
+			overrides = append(overrides, fmt.Sprintf(`mcp_servers.nex.command=%s`, tomlQuote(nexMCP)))
+			if apiKey := strings.TrimSpace(config.ResolveAPIKey("")); apiKey != "" {
+				overrides = append(overrides, fmt.Sprintf(`mcp_servers.nex.env_vars=%s`, tomlStringArray([]string{
+					"WUPHF_API_KEY",
+					"NEX_API_KEY",
+				})))
+			}
+		}
 	}
 
 	return overrides, nil
@@ -689,4 +1395,48 @@ func tomlStringArray(values []string) string {
 		return "[]"
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+func setEnvValue(env []string, key string, value string) []string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return env
+	}
+	prefix := key + "="
+	filtered := env[:0]
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return append(filtered, prefix+value)
+}
+
+func stripEnvKeys(env []string, strip []string) []string {
+	if len(strip) == 0 {
+		return env
+	}
+	stripSet := make(map[string]struct{}, len(strip))
+	for _, key := range strip {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			stripSet[key] = struct{}{}
+		}
+	}
+	if len(stripSet) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key := entry
+		if idx := strings.IndexByte(entry, '='); idx >= 0 {
+			key = entry[:idx]
+		}
+		if _, ok := stripSet[key]; ok {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }

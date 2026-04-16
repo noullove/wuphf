@@ -6,15 +6,47 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nex-crm/wuphf/internal/team"
 )
+
+func ensureBrokerMembers(t *testing.T, ctx context.Context, slugs ...string) {
+	t.Helper()
+	for _, slug := range slugs {
+		name := strings.ReplaceAll(slug, "-", " ")
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		name = strings.ToUpper(name[:1]) + name[1:]
+		err := brokerPostJSON(ctx, "/office-members", map[string]any{
+			"action":     "create",
+			"slug":       slug,
+			"name":       name,
+			"role":       name,
+			"created_by": "ceo",
+		}, nil)
+		if err != nil && !strings.Contains(err.Error(), "member already exists") {
+			t.Fatalf("ensure broker member %s: %v", slug, err)
+		}
+		err = brokerPostJSON(ctx, "/channel-members", map[string]any{
+			"channel": "general",
+			"action":  "add",
+			"slug":    slug,
+		}, nil)
+		if err != nil {
+			t.Fatalf("ensure broker member %s in #general: %v", slug, err)
+		}
+	}
+}
 
 func textFromResult(t *testing.T, result *mcp.CallToolResult) string {
 	t.Helper()
@@ -26,6 +58,85 @@ func textFromResult(t *testing.T, result *mcp.CallToolResult) string {
 		t.Fatalf("expected text content, got %T", result.Content[0])
 	}
 	return text.Text
+}
+
+func TestConfigureServerToolsExposesActionToolsToOfficeSpecialists(t *testing.T) {
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "wuphf-team-test", Version: "0.1.0"}, nil)
+	configureServerTools(server, "workflow-architect", "general", false)
+
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Wait()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	tools, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	names := make([]string, 0, len(tools.Tools))
+	for _, tool := range tools.Tools {
+		names = append(names, tool.Name)
+	}
+	if !slices.Contains(names, "team_action_connections") {
+		t.Fatalf("expected team_action_connections for office specialist, got %v", names)
+	}
+	if !slices.Contains(names, "team_action_workflow_execute") {
+		t.Fatalf("expected team_action_workflow_execute for office specialist, got %v", names)
+	}
+}
+
+func TestConfigureServerToolsAnnotatesActionTools(t *testing.T) {
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "wuphf-team-test", Version: "0.1.0"}, nil)
+	configureServerTools(server, "workflow-architect", "general", false)
+
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Wait()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	tools, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+
+	var connections *mcp.Tool
+	var execute *mcp.Tool
+	for i := range tools.Tools {
+		switch tools.Tools[i].Name {
+		case "team_action_connections":
+			connections = tools.Tools[i]
+		case "team_action_execute":
+			execute = tools.Tools[i]
+		}
+	}
+	if connections == nil || connections.Annotations == nil || !connections.Annotations.ReadOnlyHint {
+		t.Fatalf("expected team_action_connections to be read-only, got %+v", connections)
+	}
+	if execute == nil || execute.Annotations == nil || execute.Annotations.DestructiveHint == nil || *execute.Annotations.DestructiveHint {
+		t.Fatalf("expected team_action_execute to be a non-destructive write tool, got %+v", execute)
+	}
 }
 
 func TestSuppressBroadcastReasonBlocksOutOfDomainReply(t *testing.T) {
@@ -77,6 +188,24 @@ func TestSuppressBroadcastReasonBlocksAfterUntargetedCEOReply(t *testing.T) {
 	}
 }
 
+func TestSuppressBroadcastReasonAllowsOperatorFollowUpInActiveTaskThread(t *testing.T) {
+	reason := suppressBroadcastReason(
+		"operator",
+		"`#task-24` approved and moving to the next execution slice.",
+		"msg-20",
+		[]brokerMessage{
+			{ID: "msg-16", From: "planner", Content: "Locked execution brief."},
+			{ID: "msg-20", From: "executor", Content: "Completed `#task-7` and moved it to review.", ReplyTo: "msg-16"},
+		},
+		[]brokerTaskSummary{
+			{ID: "task-24", Owner: "operator", Status: "in_progress", ThreadID: "msg-16", Title: "Approve script and open next execution lane"},
+		},
+	)
+	if reason != "" {
+		t.Fatalf("expected operator follow-up in active task thread to be allowed, got %q", reason)
+	}
+}
+
 // TestSuppressBroadcastReasonAllowsMarketingCompetitorPricing verifies that a
 // marketing agent can broadcast about "competitor pricing" without being suppressed.
 // Before the fix, "pricing" was a sales-only keyword so "competitor pricing findings"
@@ -106,6 +235,50 @@ func TestSuppressBroadcastReasonBlocksFEOnPureBackend(t *testing.T) {
 	)
 	if reason == "" {
 		t.Error("FE agent should be suppressed for pure backend/database content")
+	}
+}
+
+func TestSuppressBroadcastReasonAllowsRecentlyCompletedOwnedTaskBroadcast(t *testing.T) {
+	reason := suppressBroadcastReason(
+		"gtm",
+		"Here is the locked monetization ladder and CTA routing for the launch packet.",
+		"",
+		nil,
+		[]brokerTaskSummary{
+			{
+				ID:        "task-4",
+				Owner:     "gtm",
+				Status:    "done",
+				Title:     "Lock the launch monetization path for the flagship WUPHF episode",
+				Details:   "Finalize monetization ladder and CTA routing for the first live upload.",
+				UpdatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
+			},
+		},
+	)
+	if reason != "" {
+		t.Fatalf("expected recently completed owned-task broadcast to be allowed, got %q", reason)
+	}
+}
+
+func TestSuppressBroadcastReasonBlocksStaleCompletedOwnedTaskBroadcast(t *testing.T) {
+	reason := suppressBroadcastReason(
+		"gtm",
+		"Here is the locked monetization ladder and CTA routing for the launch packet.",
+		"",
+		nil,
+		[]brokerTaskSummary{
+			{
+				ID:        "task-4",
+				Owner:     "gtm",
+				Status:    "done",
+				Title:     "Lock the launch monetization path for the flagship WUPHF episode",
+				Details:   "Finalize monetization ladder and CTA routing for the first live upload.",
+				UpdatedAt: time.Now().Add(-30 * time.Minute).Format(time.RFC3339),
+			},
+		},
+	)
+	if reason == "" {
+		t.Fatal("expected stale completed task to stop authorizing out-of-domain broadcast")
 	}
 }
 
@@ -161,6 +334,7 @@ func TestHandleTeamMemberCreateTriggersReconfigure(t *testing.T) {
 
 func TestHandleTeamChannelCreateTriggersReconfigure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
 		t.Fatalf("start broker: %v", err)
@@ -169,6 +343,7 @@ func TestHandleTeamChannelCreateTriggersReconfigure(t *testing.T) {
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "pm", "fe")
 
 	called := 0
 	prev := reconfigureOfficeSessionFn
@@ -178,7 +353,7 @@ func TestHandleTeamChannelCreateTriggersReconfigure(t *testing.T) {
 	}
 	defer func() { reconfigureOfficeSessionFn = prev }()
 
-	if _, _, err := handleTeamChannel(context.Background(), nil, TeamChannelArgs{
+	if _, _, err := handleTeamChannel(ctx, nil, TeamChannelArgs{
 		Action:      "create",
 		Channel:     "launch",
 		Name:        "launch",
@@ -223,6 +398,57 @@ func TestHandleTeamChannelCreateTriggersReconfigure(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected created channel to persist")
+	}
+}
+
+func TestHandleTeamChannelCreateRequiresExplicitSlug(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WUPHF_CHANNEL", "general")
+
+	b := team.NewBroker()
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("start broker: %v", err)
+	}
+	defer b.Stop()
+
+	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
+	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+
+	result, _, err := handleTeamChannel(context.Background(), nil, TeamChannelArgs{
+		Action:      "create",
+		Name:        "launch",
+		Description: "Launch execution channel",
+		Members:     []string{"pm", "fe"},
+		MySlug:      "ceo",
+	})
+	if err != nil {
+		t.Fatalf("handleTeamChannel returned unexpected error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("expected tool error result when slug is omitted, got %+v", result)
+	}
+	if got := textFromResult(t, result); !strings.Contains(got, "channel slug is required") {
+		t.Fatalf("expected explicit slug message, got %q", got)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/channels", b.Addr()), nil)
+	req.Header.Set("Authorization", "Bearer "+b.Token())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("fetch channels: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var channelsResult struct {
+		Channels []struct {
+			Slug string `json:"slug"`
+		} `json:"channels"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&channelsResult); err != nil {
+		t.Fatalf("decode channels: %v", err)
+	}
+	if len(channelsResult.Channels) != 1 || channelsResult.Channels[0].Slug != "general" {
+		t.Fatalf("expected only general channel to remain, got %+v", channelsResult.Channels)
 	}
 }
 
@@ -491,8 +717,10 @@ func TestHandleTeamMemoryQuerySharedSuggestsRoutingHint(t *testing.T) {
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ctx := context.Background()
+	ensureBrokerMembers(t, ctx, "pm", "fe")
 
-	result, _, err := handleTeamMemoryQuery(context.Background(), nil, TeamMemoryQueryArgs{
+	result, _, err := handleTeamMemoryQuery(ctx, nil, TeamMemoryQueryArgs{
 		Query:  "launch positioning",
 		Scope:  "shared",
 		MySlug: "fe",
@@ -554,6 +782,7 @@ func TestHandleTeamPollOneOnOneHighlightsLatestHumanRequest(t *testing.T) {
 
 func TestHandleTeamPollScopesMessagesForNonCEO(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
 
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
@@ -563,6 +792,7 @@ func TestHandleTeamPollScopesMessagesForNonCEO(t *testing.T) {
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "pm", "fe")
 
 	for _, msg := range []map[string]any{
 		{"channel": "general", "from": "you", "content": "Human wants a quick update."},
@@ -570,12 +800,12 @@ func TestHandleTeamPollScopesMessagesForNonCEO(t *testing.T) {
 		{"channel": "general", "from": "ceo", "content": "Frontend, tighten the CTA copy.", "tagged": []string{"fe"}},
 		{"channel": "general", "from": "fe", "content": "I am on the CTA copy now."},
 	} {
-		if err := brokerPostJSON(context.Background(), "/messages", msg, nil); err != nil {
+		if err := brokerPostJSON(ctx, "/messages", msg, nil); err != nil {
 			t.Fatalf("post message: %v", err)
 		}
 	}
 
-	result, _, err := handleTeamPoll(context.Background(), nil, TeamPollArgs{Channel: "general", MySlug: "fe"})
+	result, _, err := handleTeamPoll(ctx, nil, TeamPollArgs{Channel: "general", MySlug: "fe"})
 	if err != nil {
 		t.Fatalf("handleTeamPoll: %v", err)
 	}
@@ -630,6 +860,7 @@ func TestSummarizeTaskRuntimeIncludesIsolationCounts(t *testing.T) {
 
 func TestHandleTeamTaskStatusReportsWorktreeIsolation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
 
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
@@ -639,6 +870,7 @@ func TestHandleTeamTaskStatusReportsWorktreeIsolation(t *testing.T) {
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "fe")
 
 	payload := map[string]any{
 		"action":          "create",
@@ -669,7 +901,7 @@ func TestHandleTeamTaskStatusReportsWorktreeIsolation(t *testing.T) {
 		t.Fatalf("expected 200 creating task, got %d", resp.StatusCode)
 	}
 
-	result, _, err := handleTeamTaskStatus(context.Background(), nil, TeamTasksArgs{
+	result, _, err := handleTeamTaskStatus(ctx, nil, TeamTasksArgs{
 		Channel: "general",
 		MySlug:  "fe",
 	})
@@ -683,17 +915,17 @@ func TestHandleTeamTaskStatusReportsWorktreeIsolation(t *testing.T) {
 	if !strings.Contains(text, "Isolated worktrees: 1") {
 		t.Fatalf("expected isolation count in %q", text)
 	}
-	if !strings.Contains(text, "branch task/42") {
+	if !strings.Contains(text, "branch wuphf-") {
 		t.Fatalf("expected worktree branch in %q", text)
 	}
-	if !strings.Contains(text, "/tmp/wuphf-task-42") {
+	if !strings.Contains(text, ".wuphf/task-worktrees/") {
 		t.Fatalf("expected worktree path in %q", text)
 	}
 	if !strings.Contains(text, "working_directory") {
 		t.Fatalf("expected working_directory guidance in %q", text)
 	}
 
-	tasksResult, _, err := handleTeamTasks(context.Background(), nil, TeamTasksArgs{
+	tasksResult, _, err := handleTeamTasks(ctx, nil, TeamTasksArgs{
 		Channel: "general",
 		MySlug:  "fe",
 	})
@@ -704,16 +936,17 @@ func TestHandleTeamTaskStatusReportsWorktreeIsolation(t *testing.T) {
 	if !strings.Contains(tasksText, "Current team tasks:") {
 		t.Fatalf("expected task listing header in %q", tasksText)
 	}
-	if !strings.Contains(tasksText, "branch task/42") {
+	if !strings.Contains(tasksText, "branch wuphf-") {
 		t.Fatalf("expected worktree branch in task listing %q", tasksText)
 	}
-	if !strings.Contains(tasksText, "working_directory /tmp/wuphf-task-42") {
+	if !strings.Contains(tasksText, "working_directory ") || !strings.Contains(tasksText, ".wuphf/task-worktrees/") {
 		t.Fatalf("expected working_directory path in task listing %q", tasksText)
 	}
 }
 
 func TestHandleTeamTaskReturnsWorktreeGuidance(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
 
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
@@ -723,6 +956,7 @@ func TestHandleTeamTaskReturnsWorktreeGuidance(t *testing.T) {
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "fe")
 
 	payload := map[string]any{
 		"action":          "create",
@@ -762,7 +996,7 @@ func TestHandleTeamTaskReturnsWorktreeGuidance(t *testing.T) {
 		t.Fatalf("decode created task: %v", err)
 	}
 
-	result, _, err := handleTeamTask(context.Background(), nil, TeamTaskArgs{
+	result, _, err := handleTeamTask(ctx, nil, TeamTaskArgs{
 		Action:  "review",
 		Channel: "general",
 		ID:      created.Task.ID,
@@ -772,10 +1006,10 @@ func TestHandleTeamTaskReturnsWorktreeGuidance(t *testing.T) {
 		t.Fatalf("handleTeamTask: %v", err)
 	}
 	text := textFromResult(t, result)
-	if !strings.Contains(text, "branch task/99") {
+	if !strings.Contains(text, "branch wuphf-") {
 		t.Fatalf("expected worktree branch in %q", text)
 	}
-	if !strings.Contains(text, "working_directory /tmp/wuphf-task-99") {
+	if !strings.Contains(text, "working_directory ") || !strings.Contains(text, ".wuphf/task-worktrees/") {
 		t.Fatalf("expected working_directory guidance in %q", text)
 	}
 }
@@ -783,6 +1017,7 @@ func TestHandleTeamTaskReturnsWorktreeGuidance(t *testing.T) {
 func TestHandleTeamRuntimeStateIncludesRecoveryAndCapabilities(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("WUPHF_NO_NEX", "1")
+	ctx := context.Background()
 
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
@@ -792,8 +1027,9 @@ func TestHandleTeamRuntimeStateIncludesRecoveryAndCapabilities(t *testing.T) {
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "fe")
 
-	if err := brokerPostJSON(context.Background(), "/messages", map[string]any{
+	if err := brokerPostJSON(ctx, "/messages", map[string]any{
 		"channel": "general",
 		"from":    "ceo",
 		"content": "Need your approval before shipping.",
@@ -801,7 +1037,7 @@ func TestHandleTeamRuntimeStateIncludesRecoveryAndCapabilities(t *testing.T) {
 		t.Fatalf("post message: %v", err)
 	}
 
-	if err := brokerPostJSON(context.Background(), "/tasks", map[string]any{
+	if err := brokerPostJSON(ctx, "/tasks", map[string]any{
 		"action":          "create",
 		"channel":         "general",
 		"title":           "Ship release candidate",
@@ -814,7 +1050,7 @@ func TestHandleTeamRuntimeStateIncludesRecoveryAndCapabilities(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	if err := brokerPostJSON(context.Background(), "/requests", map[string]any{
+	if err := brokerPostJSON(ctx, "/requests", map[string]any{
 		"kind":     "approval",
 		"channel":  "general",
 		"from":     "ceo",
@@ -829,7 +1065,7 @@ func TestHandleTeamRuntimeStateIncludesRecoveryAndCapabilities(t *testing.T) {
 		t.Fatalf("create request: %v", err)
 	}
 
-	result, structured, err := handleTeamRuntimeState(context.Background(), nil, TeamRuntimeStateArgs{
+	result, structured, err := handleTeamRuntimeState(ctx, nil, TeamRuntimeStateArgs{
 		Channel:      "general",
 		MySlug:       "fe",
 		MessageLimit: 10,
@@ -842,7 +1078,7 @@ func TestHandleTeamRuntimeStateIncludesRecoveryAndCapabilities(t *testing.T) {
 		"Runtime state for #general",
 		"Pending human requests: 1",
 		"Current focus: Approve release from @ceo.",
-		"working_directory /tmp/wuphf-task-77",
+		"working_directory ",
 		"Runtime capabilities:",
 		"Memory backend [info]: Nex is disabled for this run, so the office is operating without an external memory backend.",
 	} {
@@ -858,7 +1094,7 @@ func TestHandleTeamRuntimeStateIncludesRecoveryAndCapabilities(t *testing.T) {
 	if snapshot.Channel != "general" {
 		t.Fatalf("expected general channel, got %q", snapshot.Channel)
 	}
-	if len(snapshot.Tasks) != 1 || snapshot.Tasks[0].WorktreePath != "/tmp/wuphf-task-77" {
+	if len(snapshot.Tasks) != 1 || !strings.Contains(snapshot.Tasks[0].WorktreePath, ".wuphf/task-worktrees/") {
 		t.Fatalf("unexpected runtime tasks: %+v", snapshot.Tasks)
 	}
 	if len(snapshot.Requests) == 0 || snapshot.Requests[0].Title != "Approve release" {
@@ -920,6 +1156,7 @@ func TestHandleTeamRequestDefaultsApprovalOptions(t *testing.T) {
 
 func TestHandleTeamPollUsesAgentScopedTranscript(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
 
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
@@ -929,6 +1166,7 @@ func TestHandleTeamPollUsesAgentScopedTranscript(t *testing.T) {
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "pm", "fe")
 
 	for _, msg := range []map[string]any{
 		{"channel": "general", "from": "you", "content": "Frontend, should we ship this?", "tagged": []string{"fe"}},
@@ -936,12 +1174,12 @@ func TestHandleTeamPollUsesAgentScopedTranscript(t *testing.T) {
 		{"channel": "general", "from": "ceo", "content": "Keep scope tight and focus on signup."},
 		{"channel": "general", "from": "fe", "content": "I can take the signup work."},
 	} {
-		if err := brokerPostJSON(context.Background(), "/messages", msg, nil); err != nil {
+		if err := brokerPostJSON(ctx, "/messages", msg, nil); err != nil {
 			t.Fatalf("post message: %v", err)
 		}
 	}
 
-	result, _, err := handleTeamPoll(context.Background(), nil, TeamPollArgs{
+	result, _, err := handleTeamPoll(ctx, nil, TeamPollArgs{
 		Channel: "general",
 		MySlug:  "fe",
 	})
@@ -959,6 +1197,7 @@ func TestHandleTeamPollUsesAgentScopedTranscript(t *testing.T) {
 
 func TestHandleTeamBroadcastDefaultsToLatestTaggedChannelAndThread(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
 
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
@@ -968,8 +1207,9 @@ func TestHandleTeamBroadcastDefaultsToLatestTaggedChannelAndThread(t *testing.T)
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "pm", "fe")
 
-	if err := brokerPostJSON(context.Background(), "/channels", map[string]any{
+	if err := brokerPostJSON(ctx, "/channels", map[string]any{
 		"action":      "create",
 		"slug":        "launch",
 		"name":        "Launch",
@@ -979,7 +1219,7 @@ func TestHandleTeamBroadcastDefaultsToLatestTaggedChannelAndThread(t *testing.T)
 	}, nil); err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
-	if err := brokerPostJSON(context.Background(), "/messages", map[string]any{
+	if err := brokerPostJSON(ctx, "/messages", map[string]any{
 		"channel": "launch",
 		"from":    "ceo",
 		"content": "Frontend, tighten the launch CTA in this thread.",
@@ -988,7 +1228,7 @@ func TestHandleTeamBroadcastDefaultsToLatestTaggedChannelAndThread(t *testing.T)
 		t.Fatalf("post launch message: %v", err)
 	}
 
-	result, _, err := handleTeamBroadcast(context.Background(), nil, TeamBroadcastArgs{
+	result, _, err := handleTeamBroadcast(ctx, nil, TeamBroadcastArgs{
 		MySlug:  "fe",
 		Content: "On it. I will keep this in the launch thread.",
 	})
@@ -1004,7 +1244,7 @@ func TestHandleTeamBroadcastDefaultsToLatestTaggedChannelAndThread(t *testing.T)
 	}
 
 	var launch brokerMessagesResponse
-	if err := brokerGetJSON(context.Background(), "/messages?channel=launch&limit=10", &launch); err != nil {
+	if err := brokerGetJSON(ctx, "/messages?channel=launch&limit=10", &launch); err != nil {
 		t.Fatalf("fetch launch messages: %v", err)
 	}
 	if len(launch.Messages) != 2 {
@@ -1018,6 +1258,7 @@ func TestHandleTeamBroadcastDefaultsToLatestTaggedChannelAndThread(t *testing.T)
 
 func TestHandleTeamPollDefaultsToLatestTaggedChannel(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
 
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
@@ -1027,8 +1268,9 @@ func TestHandleTeamPollDefaultsToLatestTaggedChannel(t *testing.T) {
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "pm", "fe")
 
-	if err := brokerPostJSON(context.Background(), "/channels", map[string]any{
+	if err := brokerPostJSON(ctx, "/channels", map[string]any{
 		"action":      "create",
 		"slug":        "launch",
 		"name":        "Launch",
@@ -1038,7 +1280,7 @@ func TestHandleTeamPollDefaultsToLatestTaggedChannel(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
-	if err := brokerPostJSON(context.Background(), "/messages", map[string]any{
+	if err := brokerPostJSON(ctx, "/messages", map[string]any{
 		"channel": "launch",
 		"from":    "ceo",
 		"content": "Frontend, review the launch thread.",
@@ -1047,7 +1289,7 @@ func TestHandleTeamPollDefaultsToLatestTaggedChannel(t *testing.T) {
 		t.Fatalf("post launch message: %v", err)
 	}
 
-	result, _, err := handleTeamPoll(context.Background(), nil, TeamPollArgs{MySlug: "fe"})
+	result, _, err := handleTeamPoll(ctx, nil, TeamPollArgs{MySlug: "fe"})
 	if err != nil {
 		t.Fatalf("handleTeamPoll: %v", err)
 	}
@@ -1062,6 +1304,7 @@ func TestHandleTeamPollDefaultsToLatestTaggedChannel(t *testing.T) {
 
 func TestHandleTeamTaskUsesTaskChannelWhenIDGiven(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
 
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
@@ -1071,8 +1314,9 @@ func TestHandleTeamTaskUsesTaskChannelWhenIDGiven(t *testing.T) {
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "pm", "fe")
 
-	if err := brokerPostJSON(context.Background(), "/channels", map[string]any{
+	if err := brokerPostJSON(ctx, "/channels", map[string]any{
 		"action":      "create",
 		"slug":        "launch",
 		"name":        "Launch",
@@ -1088,7 +1332,7 @@ func TestHandleTeamTaskUsesTaskChannelWhenIDGiven(t *testing.T) {
 			ID string `json:"id"`
 		} `json:"task"`
 	}
-	if err := brokerPostJSON(context.Background(), "/tasks", map[string]any{
+	if err := brokerPostJSON(ctx, "/tasks", map[string]any{
 		"action":     "create",
 		"channel":    "launch",
 		"title":      "Review launch CTA",
@@ -1099,7 +1343,7 @@ func TestHandleTeamTaskUsesTaskChannelWhenIDGiven(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	result, _, err := handleTeamTask(context.Background(), nil, TeamTaskArgs{
+	result, _, err := handleTeamTask(ctx, nil, TeamTaskArgs{
 		Action: "review",
 		ID:     created.Task.ID,
 		MySlug: "fe",
@@ -1116,20 +1360,22 @@ func TestHandleTeamTaskUsesTaskChannelWhenIDGiven(t *testing.T) {
 func TestHandleHumanMessageDefaultsToDirectReplyThreadInOneOnOneMode(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("WUPHF_ONE_ON_ONE", "1")
+	ctx := context.Background()
 
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
 		t.Fatalf("start broker: %v", err)
 	}
 	defer b.Stop()
+
+	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
+	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "pm")
 	if err := b.SetSessionMode(team.SessionModeOneOnOne, "pm"); err != nil {
 		t.Fatalf("set session mode: %v", err)
 	}
 
-	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
-	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
-
-	if err := brokerPostJSON(context.Background(), "/messages", map[string]any{
+	if err := brokerPostJSON(ctx, "/messages", map[string]any{
 		"channel": "general",
 		"from":    "you",
 		"content": "Can you send me the latest product answer?",
@@ -1137,7 +1383,7 @@ func TestHandleHumanMessageDefaultsToDirectReplyThreadInOneOnOneMode(t *testing.
 		t.Fatalf("post direct human message: %v", err)
 	}
 
-	result, _, err := handleHumanMessage(context.Background(), nil, HumanMessageArgs{
+	result, _, err := handleHumanMessage(ctx, nil, HumanMessageArgs{
 		MySlug:  "pm",
 		Content: "Yes. Here is the latest product answer.",
 	})
@@ -1155,6 +1401,7 @@ func TestHandleHumanMessageDefaultsToDirectReplyThreadInOneOnOneMode(t *testing.
 
 func TestHandleTeamInboxAndOutboxExposeOwnedTranscriptSlices(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
 
 	b := team.NewBroker()
 	if err := b.StartOnPort(0); err != nil {
@@ -1164,15 +1411,16 @@ func TestHandleTeamInboxAndOutboxExposeOwnedTranscriptSlices(t *testing.T) {
 
 	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
 	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+	ensureBrokerMembers(t, ctx, "pm", "fe")
 
-	if err := brokerPostJSON(context.Background(), "/messages", map[string]any{
+	if err := brokerPostJSON(ctx, "/messages", map[string]any{
 		"channel": "general",
 		"from":    "ceo",
 		"content": "Frontend, take the signup thread.",
 	}, nil); err != nil {
 		t.Fatalf("post ceo message: %v", err)
 	}
-	if err := brokerPostJSON(context.Background(), "/messages", map[string]any{
+	if err := brokerPostJSON(ctx, "/messages", map[string]any{
 		"channel":  "general",
 		"from":     "fe",
 		"content":  "I can own the signup thread.",
@@ -1180,7 +1428,7 @@ func TestHandleTeamInboxAndOutboxExposeOwnedTranscriptSlices(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatalf("post own message: %v", err)
 	}
-	if err := brokerPostJSON(context.Background(), "/messages", map[string]any{
+	if err := brokerPostJSON(ctx, "/messages", map[string]any{
 		"channel":  "general",
 		"from":     "pm",
 		"content":  "Please include pricing copy in that thread.",
@@ -1188,14 +1436,14 @@ func TestHandleTeamInboxAndOutboxExposeOwnedTranscriptSlices(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatalf("post thread reply: %v", err)
 	}
-	if err := brokerPostJSON(context.Background(), "/messages", map[string]any{
+	if err := brokerPostJSON(ctx, "/messages", map[string]any{
 		"channel": "general",
 		"from":    "fe",
 		"content": "Shipped the initial branch.",
 	}, nil); err != nil {
 		t.Fatalf("post own top-level message: %v", err)
 	}
-	if err := brokerPostJSON(context.Background(), "/messages", map[string]any{
+	if err := brokerPostJSON(ctx, "/messages", map[string]any{
 		"channel": "general",
 		"from":    "pm",
 		"content": "Unrelated roadmap chatter.",
@@ -1203,7 +1451,7 @@ func TestHandleTeamInboxAndOutboxExposeOwnedTranscriptSlices(t *testing.T) {
 		t.Fatalf("post unrelated message: %v", err)
 	}
 
-	inboxResult, _, err := handleTeamInbox(context.Background(), nil, TeamPollArgs{Channel: "general", MySlug: "fe"})
+	inboxResult, _, err := handleTeamInbox(ctx, nil, TeamPollArgs{Channel: "general", MySlug: "fe"})
 	if err != nil {
 		t.Fatalf("handleTeamInbox: %v", err)
 	}
@@ -1292,10 +1540,12 @@ func TestHandleTeamPlanCreatesDependentBlockedTasks(t *testing.T) {
 		Channel: "general",
 		MySlug:  "ceo",
 		Tasks: []struct {
-			Title     string   `json:"title" jsonschema:"Task title"`
-			Assignee  string   `json:"assignee" jsonschema:"Agent slug to own this task"`
-			Details   string   `json:"details,omitempty" jsonschema:"Optional task details"`
-			DependsOn []string `json:"depends_on,omitempty" jsonschema:"Titles or IDs of tasks this depends on"`
+			Title         string   `json:"title" jsonschema:"Task title"`
+			Assignee      string   `json:"assignee" jsonschema:"Agent slug to own this task"`
+			Details       string   `json:"details,omitempty" jsonschema:"Optional task details"`
+			TaskType      string   `json:"task_type,omitempty" jsonschema:"Optional task type such as research, feature, launch, follow_up, bugfix, or incident"`
+			ExecutionMode string   `json:"execution_mode,omitempty" jsonschema:"Optional execution mode such as office or local_worktree"`
+			DependsOn     []string `json:"depends_on,omitempty" jsonschema:"Titles or IDs of tasks this depends on"`
 		}{
 			{Title: "Research competitors", Assignee: "research"},
 			{Title: "Write positioning copy", Assignee: "marketing", DependsOn: []string{"Research competitors"}},
@@ -1326,4 +1576,94 @@ func TestHandleTeamPlanCreatesDependentBlockedTasks(t *testing.T) {
 			t.Fatalf("research task should not be BLOCKED: %q", line)
 		}
 	}
+}
+
+func TestHandleTeamPlanPreservesTaskMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := team.NewBroker()
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("start broker: %v", err)
+	}
+	defer b.Stop()
+
+	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
+	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+
+	_, _, err := handleTeamPlan(context.Background(), nil, TeamPlanArgs{
+		Channel: "general",
+		MySlug:  "ceo",
+		Tasks: []struct {
+			Title         string   `json:"title" jsonschema:"Task title"`
+			Assignee      string   `json:"assignee" jsonschema:"Agent slug to own this task"`
+			Details       string   `json:"details,omitempty" jsonschema:"Optional task details"`
+			TaskType      string   `json:"task_type,omitempty" jsonschema:"Optional task type such as research, feature, launch, follow_up, bugfix, or incident"`
+			ExecutionMode string   `json:"execution_mode,omitempty" jsonschema:"Optional execution mode such as office or local_worktree"`
+			DependsOn     []string `json:"depends_on,omitempty" jsonschema:"Titles or IDs of tasks this depends on"`
+		}{
+			{Title: "Build the studio control plane", Assignee: "eng", TaskType: "feature", ExecutionMode: "local_worktree"},
+			{Title: "Package the launch slate", Assignee: "gtm", TaskType: "launch", ExecutionMode: "office"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleTeamPlan: %v", err)
+	}
+
+	var result brokerTasksResponse
+	if err := brokerGetJSON(context.Background(), "/tasks?channel=general&include_done=true", &result); err != nil {
+		t.Fatalf("fetch tasks: %v", err)
+	}
+
+	found := map[string]brokerTaskSummary{}
+	for _, task := range result.Tasks {
+		found[task.Title] = task
+	}
+	if got := found["Build the studio control plane"]; got.TaskType != "feature" || got.ExecutionMode != "local_worktree" {
+		t.Fatalf("expected feature/local_worktree metadata, got %+v", got)
+	}
+	if got := found["Package the launch slate"]; got.TaskType != "launch" || got.ExecutionMode != "office" {
+		t.Fatalf("expected launch/office metadata, got %+v", got)
+	}
+}
+
+func TestHandleTeamTaskCreatePreservesTaskMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	b := team.NewBroker()
+	if err := b.StartOnPort(0); err != nil {
+		t.Fatalf("start broker: %v", err)
+	}
+	defer b.Stop()
+
+	t.Setenv("WUPHF_TEAM_BROKER_URL", "http://"+b.Addr())
+	t.Setenv("WUPHF_BROKER_TOKEN", b.Token())
+
+	_, _, err := handleTeamTask(context.Background(), nil, TeamTaskArgs{
+		Action:        "create",
+		Channel:       "general",
+		Title:         "Implement studio foundations",
+		Owner:         "eng",
+		TaskType:      "feature",
+		ExecutionMode: "local_worktree",
+		MySlug:        "ceo",
+	})
+	if err != nil {
+		t.Fatalf("handleTeamTask: %v", err)
+	}
+
+	var result brokerTasksResponse
+	if err := brokerGetJSON(context.Background(), "/tasks?channel=general&include_done=true", &result); err != nil {
+		t.Fatalf("fetch tasks: %v", err)
+	}
+
+	for _, task := range result.Tasks {
+		if task.Title != "Implement studio foundations" {
+			continue
+		}
+		if task.TaskType != "feature" || task.ExecutionMode != "local_worktree" {
+			t.Fatalf("expected feature/local_worktree metadata, got %+v", task)
+		}
+		return
+	}
+	t.Fatal("expected created task to be present")
 }

@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/nex-crm/wuphf/internal/brokeraddr"
 	"github.com/nex-crm/wuphf/internal/team"
 )
 
@@ -22,16 +23,35 @@ func currentBrokerAuthToken() string {
 	if token := strings.TrimSpace(os.Getenv("NEX_BROKER_TOKEN")); token != "" {
 		return token
 	}
-	data, err := os.ReadFile(brokerTokenPath)
+	path := strings.TrimSpace(brokerTokenPath)
+	if path == "" || path == brokeraddr.DefaultTokenFile {
+		path = brokeraddr.ResolveTokenFile()
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
 }
 
+func brokerBaseURL() string {
+	return brokeraddr.ResolveBaseURL()
+}
+
+func brokerURL(path string) string {
+	return brokerBaseURL() + path
+}
+
+func normalizeBrokerURL(raw string) string {
+	base := brokerBaseURL()
+	raw = strings.Replace(raw, "http://127.0.0.1:7890", base, 1)
+	raw = strings.Replace(raw, "http://localhost:7890", base, 1)
+	return raw
+}
+
 // newBrokerRequest creates an HTTP request with the broker auth header.
 func newBrokerRequest(method, url string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequest(method, url, body)
+	req, err := http.NewRequest(method, normalizeBrokerURL(url), body)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +66,7 @@ func newBrokerRequest(method, url string, body io.Reader) (*http.Request, error)
 
 func pollBroker(sinceID string, channel string) tea.Cmd {
 	return func() tea.Msg {
-		url := "http://127.0.0.1:7890/messages?limit=100&channel=" + channel
+		url := brokerURL("/messages?limit=100&channel=" + channel)
 		if sinceID != "" {
 			url += "&since_id=" + sinceID
 		}
@@ -191,7 +211,7 @@ func createDMChannel(agentSlug string) tea.Cmd {
 func pollHealth() tea.Cmd {
 	return func() tea.Msg {
 		client := &http.Client{Timeout: 1200 * time.Millisecond}
-		resp, err := client.Get("http://127.0.0.1:7890/health")
+		resp, err := client.Get(brokerURL("/health"))
 		if err != nil {
 			return channelHealthMsg{}
 		}

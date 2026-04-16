@@ -65,6 +65,7 @@ func (l *Launcher) runHeadlessClaudeTurn(ctx context.Context, slug string, notif
 	} else {
 		cmd.Dir = l.cwd
 	}
+	configureHeadlessProcess(cmd)
 	env := l.buildHeadlessClaudeEnv(slug)
 	if worktreeDir != "" {
 		env = append(env, "WUPHF_WORKTREE_PATH="+worktreeDir)
@@ -111,6 +112,17 @@ func (l *Launcher) runHeadlessClaudeTurn(ctx context.Context, slug string, notif
 		pw.Close()
 		return err
 	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			terminateHeadlessProcess(cmd)
+			_ = stdout.Close()
+			_ = pw.CloseWithError(ctx.Err())
+		case <-done:
+		}
+	}()
 
 	startedAt := time.Now()
 	metrics := headlessProgressMetrics{
@@ -221,6 +233,7 @@ func (l *Launcher) buildHeadlessClaudeEnv(slug string) []string {
 	env = append(env,
 		"WUPHF_AGENT_SLUG="+slug,
 		"WUPHF_BROKER_TOKEN="+l.broker.Token(),
+		"WUPHF_BROKER_BASE_URL="+l.BrokerBaseURL(),
 		"WUPHF_HEADLESS_PROVIDER=claude",
 		"WUPHF_MEMORY_BACKEND="+config.ResolveMemoryBackend(""),
 		fmt.Sprintf("WUPHF_NO_NEX=%t", config.ResolveNoNex()),

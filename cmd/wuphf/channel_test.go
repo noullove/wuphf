@@ -412,7 +412,7 @@ func TestProviderCommandOpensProviderPicker(t *testing.T) {
 
 func TestProviderSelectionSavesCodexAndRequestsRestart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := config.Save(config.Config{LLMProvider: "claude-code", Pack: "founding-team"}); err != nil {
+	if err := config.Save(config.Config{LLMProvider: "claude-code", Blueprint: "multi-agent-workflow-consulting"}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
 
@@ -1325,6 +1325,7 @@ func TestInitCommandRunsForGBrainBackend(t *testing.T) {
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("WUPHF_MEMORY_BACKEND", config.MemoryBackendGBrain)
+	t.Setenv("WUPHF_API_KEY", "")
 	defer os.Setenv("HOME", origHome)
 
 	m := newChannelModel(false)

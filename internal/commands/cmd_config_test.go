@@ -38,6 +38,29 @@ func TestConfigSetActionProviderPersists(t *testing.T) {
 	})
 }
 
+func TestConfigSetBlueprintPersists(t *testing.T) {
+	withTempConfigHome(t, func() {
+		result := Dispatch("/config set blueprint multi-agent-workflow-consulting", "", "text", 0)
+		if result.ExitCode != 0 {
+			t.Fatalf("expected success, got exit=%d err=%q output=%q", result.ExitCode, result.Error, result.Output)
+		}
+		if result.Output != "Set blueprint = multi-agent-workflow-consulting" {
+			t.Fatalf("unexpected output %q", result.Output)
+		}
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("load config: %v", err)
+		}
+		if got := cfg.ActiveBlueprint(); got != "multi-agent-workflow-consulting" {
+			t.Fatalf("expected active blueprint multi-agent-workflow-consulting, got %q", got)
+		}
+		if cfg.Pack != "" {
+			t.Fatalf("expected legacy pack alias to remain unset on new writes, got %q", cfg.Pack)
+		}
+	})
+}
+
 func TestConfigShowIncludesResolvedActionProvider(t *testing.T) {
 	withTempConfigHome(t, func() {
 		if err := config.Save(config.Config{ActionProvider: "composio"}); err != nil {
@@ -49,6 +72,9 @@ func TestConfigShowIncludesResolvedActionProvider(t *testing.T) {
 			t.Fatalf("expected success, got exit=%d err=%q output=%q", result.ExitCode, result.Error, result.Output)
 		}
 		if want := "Action provider: composio"; !contains(result.Output, want) {
+			t.Fatalf("expected %q in output %q", want, result.Output)
+		}
+		if want := "Blueprint:"; !contains(result.Output, want) {
 			t.Fatalf("expected %q in output %q", want, result.Output)
 		}
 	})

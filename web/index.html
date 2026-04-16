@@ -132,6 +132,315 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
 .app-card-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
 .app-card-meta { font-size: 11px; color: var(--text-tertiary); }
 
+/* ─── Studio control plane ─── */
+.studio-shell { display: flex; flex-direction: column; gap: 16px; }
+.studio-hero {
+  position: relative;
+  overflow: hidden;
+  padding: 28px;
+  border-radius: 24px;
+  border: 1px solid rgba(201, 173, 139, 0.45);
+  background:
+    radial-gradient(circle at top right, rgba(236,178,46,0.26), transparent 34%),
+    radial-gradient(circle at bottom left, rgba(18,100,163,0.16), transparent 30%),
+    linear-gradient(140deg, #fff7ea 0%, #fffdf8 52%, #eef6fb 100%);
+  box-shadow: 0 20px 70px rgba(59,47,47,0.08);
+}
+.studio-hero::after {
+  content: '';
+  position: absolute;
+  inset: auto -48px -64px auto;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(224,30,90,0.12), transparent 68%);
+  pointer-events: none;
+}
+.studio-hero-grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+  gap: 20px;
+}
+.studio-kicker,
+.studio-card-kicker,
+.studio-stage-kicker,
+.studio-queue-label,
+.studio-econ-label,
+.studio-ladder-kicker {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.studio-title {
+  margin-top: 10px;
+  font-size: clamp(2rem, 5vw, 3.6rem);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  max-width: 11ch;
+}
+.studio-copy {
+  margin-top: 14px;
+  max-width: 60ch;
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+.studio-chip-row,
+.studio-actions,
+.studio-hero-metrics,
+.studio-inline-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.studio-chip,
+.studio-mini-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(18,100,163,0.12);
+  background: rgba(255,255,255,0.78);
+  font-size: 12px;
+  color: var(--text);
+}
+.studio-chip-row { margin-top: 18px; }
+.studio-actions { margin-top: 20px; }
+.studio-actions .btn { box-shadow: none; }
+.studio-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-self: stretch;
+}
+.studio-aside-card,
+.studio-stage-card,
+.studio-queue-item,
+.studio-econ-card,
+.studio-ladder-card {
+  background: rgba(255,255,255,0.82);
+  border: 1px solid rgba(212,196,176,0.9);
+  border-radius: 18px;
+  box-shadow: 0 10px 32px rgba(59,47,47,0.06);
+}
+.studio-aside-card { padding: 18px; }
+.studio-aside-title {
+  margin-top: 8px;
+  font-size: 18px;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+.studio-aside-copy {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.studio-aside-list {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+.studio-aside-item {
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(250,246,241,0.9);
+  border: 1px solid var(--border-light);
+}
+.studio-aside-item strong {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.studio-stat-grid,
+.studio-stage-grid,
+.studio-ladder-grid,
+.studio-econ-grid {
+  display: grid;
+  gap: 14px;
+}
+.studio-stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.studio-stat-card {
+  padding: 18px;
+  border-radius: 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+.studio-stat-value {
+  margin-top: 10px;
+  font-size: 28px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.studio-stat-copy {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.studio-section {
+  padding: 24px;
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(250,246,241,0.88));
+  border: 1px solid rgba(212,196,176,0.72);
+}
+.studio-section-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.studio-section-title {
+  margin-top: 8px;
+  font-size: 24px;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+}
+.studio-section-copy {
+  margin-top: 8px;
+  max-width: 62ch;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+.studio-stage-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.studio-stage-card { padding: 18px; }
+.studio-stage-top,
+.studio-queue-top,
+.studio-queue-meta,
+.studio-econ-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.studio-stage-count,
+.studio-econ-value {
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.studio-stage-title,
+.studio-queue-title,
+.studio-ladder-title {
+  margin-top: 10px;
+  font-size: 17px;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+.studio-stage-copy,
+.studio-queue-copy,
+.studio-ladder-copy {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.studio-stage-footer,
+.studio-ladder-footer {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.studio-queue-list {
+  display: grid;
+  gap: 12px;
+}
+.studio-queue-item { padding: 18px; }
+.studio-queue-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.86);
+}
+.studio-queue-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.studio-queue-status.active { color: var(--accent); border-color: rgba(18,100,163,0.22); background: rgba(232,245,254,0.78); }
+.studio-queue-status.ready { color: var(--green); border-color: rgba(0,122,90,0.22); background: rgba(227,249,229,0.88); }
+.studio-queue-status.published { color: var(--text-secondary); }
+.studio-inline-stats { margin-top: 14px; }
+.studio-inline-stat {
+  min-width: 110px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(250,246,241,0.9);
+  border: 1px solid var(--border-light);
+}
+.studio-inline-stat strong {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.studio-inline-stat span {
+  display: block;
+  margin-top: 5px;
+  font-size: 13px;
+  color: var(--text);
+}
+.studio-queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.studio-econ-grid,
+.studio-ladder-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.studio-econ-card,
+.studio-ladder-card { padding: 18px; }
+.studio-econ-copy {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.studio-econ-detail {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.studio-footnote {
+  padding: 14px 18px;
+  border-radius: 16px;
+  background: var(--bg-card);
+  border: 1px dashed rgba(18,100,163,0.28);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 1100px) {
+  .studio-hero-grid,
+  .studio-stat-grid,
+  .studio-stage-grid,
+  .studio-econ-grid,
+  .studio-ladder-grid { grid-template-columns: 1fr; }
+}
+
 /* ─── Typography ─── */
 .font-logo { font-family: var(--font-logo); font-style: italic; }
 .font-serif { font-family: var(--font-serif); }
@@ -593,6 +902,115 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
 .form-card { padding: 24px; }
 .form-group { margin-bottom: 20px; }
 .form-group:last-child { margin-bottom: 0; }
+.form-intro {
+  margin-bottom: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+/* Starter templates */
+.starter-grid {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.starter-card {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at top right, rgba(18,100,163,0.12), transparent 36%),
+    linear-gradient(180deg, rgba(255,255,255,0.98), rgba(245,249,252,0.98));
+  padding: 18px 18px 16px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  font-family: var(--font-sans);
+}
+.starter-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-dark);
+  box-shadow: 0 10px 24px rgba(18,100,163,0.08);
+}
+.starter-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 14px 30px rgba(18,100,163,0.14);
+}
+.starter-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.starter-card-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.starter-card-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.starter-card-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(18,100,163,0.18);
+  background: rgba(232,245,254,0.8);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+}
+.starter-card-title {
+  margin-top: 14px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.starter-card-copy {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+.starter-card-points {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+.starter-card-point {
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(18,100,163,0.12);
+  background: rgba(255,255,255,0.84);
+  padding: 10px 12px;
+}
+.starter-card-label {
+  display: block;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.starter-card-value {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+@media (max-width: 640px) {
+  .starter-card-points { grid-template-columns: 1fr; }
+}
 
 /* Team grid */
 .team-grid { display: grid; gap: 8px; grid-template-columns: repeat(2, 1fr); }
@@ -1066,6 +1484,55 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
 .live-work-card-dot.blocked { background: var(--yellow); }
 .live-work-card-agent { font-weight: 600; color: var(--text); font-size: 11px; }
 .live-work-card-task { color: var(--text-secondary); max-width: 140px; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+.live-work-card-meta { display: inline-flex; align-items: center; gap: 6px; color: var(--text-tertiary); font-size: 10px; }
+.live-work-card-channel { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: var(--radius-full); background: var(--bg); border: 1px solid var(--border); font-size: 10px; color: var(--text-tertiary); }
+.live-work-card-tokens { margin-left: auto; color: var(--accent); font-family: var(--font-mono); font-size: 10px; }
+.live-work-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; padding-bottom: 6px; }
+.live-work-lane { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; transition: all 0.12s; }
+.live-work-lane:hover { border-color: var(--accent); box-shadow: 0 4px 12px rgba(59,47,47,0.08); }
+.live-work-lane-header { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.live-work-lane-owner { font-weight: 600; color: var(--text); font-size: 12px; }
+.live-work-lane-title { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
+.live-work-lane-submeta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10px; color: var(--text-tertiary); }
+.live-work-lane-status { display: inline-flex; align-items: center; padding: 2px 6px; border-radius: var(--radius-full); font-size: 10px; font-weight: 600; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.03em; }
+.live-work-lane-status.in_progress { background: var(--blue-bg); color: var(--blue); }
+.live-work-lane-status.review { background: var(--yellow-bg); color: var(--yellow); }
+.live-work-lane-status.blocked { background: var(--red-bg); color: var(--red); }
+.live-work-lane-status.open { background: var(--bg); color: var(--text-tertiary); border: 1px solid var(--border); }
+
+.activity-shell { padding: 20px; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; height: 100%; }
+.activity-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.activity-hero-title { font-size: 18px; font-weight: 600; color: var(--text); }
+.activity-hero-copy { font-size: 13px; color: var(--text-secondary); max-width: 720px; line-height: 1.5; }
+.activity-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.activity-stat-card { padding: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); display: flex; flex-direction: column; gap: 4px; }
+.activity-stat-kicker { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); font-weight: 600; }
+.activity-stat-value { font-size: 22px; font-weight: 700; color: var(--text); font-family: var(--font-mono); }
+.activity-stat-copy { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
+.activity-grid { display: grid; grid-template-columns: 1.2fr 0.9fr; gap: 16px; }
+.activity-column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.activity-section { padding: 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); display: flex; flex-direction: column; gap: 10px; }
+.activity-section-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.activity-section-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.activity-section-meta { font-size: 11px; color: var(--text-tertiary); }
+.activity-list { display: flex; flex-direction: column; gap: 8px; }
+.activity-item { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border-light); border-radius: var(--radius-md); }
+.activity-item-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.activity-item-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.activity-item-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
+.activity-item-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 10px; color: var(--text-tertiary); }
+.activity-kind-pill { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: var(--radius-full); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg); border: 1px solid var(--border); color: var(--text-tertiary); }
+.activity-kind-pill.warning { background: var(--yellow-bg); color: var(--yellow); border-color: transparent; }
+.activity-kind-pill.danger { background: var(--red-bg); color: var(--red); border-color: transparent; }
+.activity-kind-pill.good { background: var(--green-bg); color: var(--green); border-color: transparent; }
+.activity-agent-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg); }
+.activity-agent-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.activity-agent-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.activity-agent-stream { font-size: 11px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; }
+.activity-empty { font-size: 12px; color: var(--text-tertiary); padding: 8px 0; }
+@media (max-width: 1100px) {
+  .activity-grid { grid-template-columns: 1fr; }
+}
 
 /* ─── Notice / Toast ─── */
 .notice-container { position: fixed; top: 16px; right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
@@ -1504,24 +1971,28 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
         <div class="wizard-hero">
           <div class="wizard-eyebrow">
             <span class="status-dot active pulse"></span>
-            The AI startup Ryan Howard always wished WUPHF.com could be
+            Start a real office from a blank slate or a preset launch mode
           </div>
-          <h1 class="wizard-headline" id="wizard-headline">Your AI team, visible and working.</h1>
-          <p class="wizard-subhead">WUPHF gives operators one room where AI specialists can claim real work, show progress in public, and pull in a human only when judgment is required. Unlike the original WUPHF.com, this one still works next quarter.</p>
+          <h1 class="wizard-headline" id="wizard-headline">Your office, visible and doing real work.</h1>
+          <p class="wizard-subhead">WUPHF gives operators one room where AI specialists can claim real business work, show progress in public, and pull in a human only when judgment is required. Live runs are judged on real outcomes, not proof artifacts or demo theater.</p>
         </div>
 
         <div class="wizard-panel">
+          <div style="margin-bottom:16px;">
+            <p class="form-intro" style="margin-bottom:12px;">Want the office to start with an actual business model instead of blank fields and hope? Pick a starter, then edit anything you want.</p>
+            <div class="starter-grid" id="starter-templates"></div>
+          </div>
           <div class="form-group">
             <label class="label" for="wiz-company">Company or project name <span style="color:var(--red,#ef4444)">*</span></label>
-            <input class="input" id="wiz-company" placeholder="Dunder Mifflin Paper Co. (probably not)" autocomplete="organization" />
+            <input class="input" id="wiz-company" placeholder="Acme Operations, or your real project name" autocomplete="organization" />
           </div>
           <div class="form-group">
             <label class="label" for="wiz-description">One-liner description <span style="color:var(--red,#ef4444)">*</span></label>
-            <input class="input" id="wiz-description" placeholder="We build AI-powered ops for lean teams" />
+            <input class="input" id="wiz-description" placeholder="What real business or workflow should this office run?" />
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label class="label" for="wiz-priority">Top priority right now <span style="color:var(--red,#ef4444)">*</span></label>
-            <input class="input" id="wiz-priority" placeholder="Ship MVP, close first 3 customers, stop being Michael Scott about the roadmap" />
+            <input class="input" id="wiz-priority" placeholder="Win the first real customer loop" />
           </div>
         </div>
 
@@ -1563,7 +2034,7 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
       <!-- Step 3: First task -->
       <div class="wizard-step" id="wizard-step-task">
         <div>
-          <h2 class="step-title" style="text-align:left;margin-bottom:4px;">What's the first thing you want done?</h2>
+          <h2 class="step-title" style="text-align:left;margin-bottom:4px;">What should this office do first?</h2>
         </div>
 
         <div class="template-grid" id="wiz-template-grid">
@@ -1571,14 +2042,14 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
         </div>
 
         <div>
-          <label class="label" for="wiz-task-input" style="margin-bottom:8px;display:block;">Or describe it yourself</label>
-          <textarea class="task-textarea" id="wiz-task-input" placeholder="Or tell me what's really on your mind&hellip;"></textarea>
+          <label class="label" for="wiz-task-input" style="margin-bottom:8px;display:block;">Or describe the first real business loop</label>
+          <textarea class="task-textarea" id="wiz-task-input" placeholder="What should the office invent and start operating?"></textarea>
         </div>
 
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-          <button class="task-skip" onclick="completeOnboarding(true)">I'll figure it out &mdash; open the empty office</button>
+          <button class="task-skip" onclick="completeOnboarding(true)">Open the office without a first task</button>
           <button class="btn btn-primary" onclick="completeOnboarding(false)">
-            Start working
+            Start the first loop
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
           </button>
         </div>
@@ -1591,7 +2062,7 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
   <div class="launch-screen" id="launch-screen">
     <div class="launch-spinner"></div>
     <p class="launch-text" id="launch-title">Opening the office&hellip;</p>
-    <p class="launch-sub" id="launch-status">Assembling your team</p>
+    <p class="launch-sub" id="launch-status">Preparing a live operating loop</p>
   </div>
 
   <!-- MAIN OFFICE -->
@@ -1689,6 +2160,7 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
       </div>
       <div class="messages" id="messages"></div>
       <div class="messages" id="dm-messages" style="display:none;"></div>
+      <div class="app-panel" id="app-studio"></div>
       <div class="app-panel" id="app-tasks"></div>
       <div class="app-panel" id="app-requests"></div>
       <div class="app-panel" id="app-policies"></div>
@@ -1705,7 +2177,7 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; }
       <div class="composer" style="position:relative;">
         <div class="autocomplete" id="autocomplete"></div>
         <div class="composer-inner">
-          <textarea class="composer-input" id="composer-input" aria-label="Message general channel" placeholder="Message #general &mdash; type / for commands, @ to mention" rows="1"></textarea>
+          <textarea class="composer-input" id="composer-input" aria-label="Message #general channel" placeholder="Message #general &mdash; type / for commands, @ to mention" rows="1"></textarea>
           <button class="composer-send" id="composer-send" aria-label="Send message" disabled>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="m22 2-10 10"/></svg>
           </button>
@@ -1992,6 +2464,7 @@ var WuphfAPI = (function() {
       .then(function(r) { return r.json(); })
       .then(function(data) {
         token = data.token;
+        if (data && data.broker_url) BROKER_DIRECT = String(data.broker_url).replace(/\/+$/, '');
         useProxy = true;
       })
       .catch(function() {
@@ -2098,11 +2571,22 @@ var WuphfAPI = (function() {
     return get('/health');
   }
 
-  function getTasks(channel) {
-    return get('/tasks', {
-      channel: channel || 'general',
-      viewer_slug: 'human'
-    });
+  function getTasks(channel, opts) {
+    var params = { viewer_slug: 'human' };
+    if (channel) params.channel = channel;
+    else params.channel = 'general';
+    if (opts && opts.includeDone) params.include_done = 'true';
+    if (opts && opts.status) params.status = opts.status;
+    if (opts && opts.mySlug) params.my_slug = opts.mySlug;
+    return get('/tasks', params);
+  }
+
+  function getOfficeTasks(opts) {
+    var params = { viewer_slug: 'human', all_channels: 'true' };
+    if (opts && opts.includeDone) params.include_done = 'true';
+    if (opts && opts.status) params.status = opts.status;
+    if (opts && opts.mySlug) params.my_slug = opts.mySlug;
+    return get('/tasks', params);
   }
 
   function toggleReaction(msgId, emoji, channel) {
@@ -2122,9 +2606,34 @@ var WuphfAPI = (function() {
       body: JSON.stringify({ id: id })
     }).then(function(r) { return r.json(); });
   }
-  function getScheduler() { return get('/scheduler'); }
+  function getScheduler(opts) {
+    var params = {};
+    if (opts && opts.dueOnly) params.due_only = 'true';
+    return get('/scheduler', params);
+  }
   function getSkills() { return get('/skills'); }
   function getUsage() { return get('/usage'); }
+  function getMemory(channel) {
+    return get('/memory', {
+      channel: channel || currentChannel || 'general'
+    });
+  }
+  function setMemory(namespace, key, value) {
+    return post('/memory', {
+      namespace: namespace,
+      key: key,
+      value: value
+    });
+  }
+  function generateStudioPackage(payload) {
+    return post('/studio/generate-package', payload || {});
+  }
+  function getStudioBootstrapPackage() {
+    return get('/operations/bootstrap-package');
+  }
+  function runStudioWorkflow(payload) {
+    return post('/studio/run-workflow', payload || {});
+  }
 
   function sseURL(path) {
     var url = baseURL() + path;
@@ -2157,6 +2666,11 @@ var WuphfAPI = (function() {
     getScheduler: getScheduler,
     getSkills: getSkills,
     getUsage: getUsage,
+    getMemory: getMemory,
+    setMemory: setMemory,
+    getStudioBootstrapPackage: getStudioBootstrapPackage,
+    generateStudioPackage: generateStudioPackage,
+    runStudioWorkflow: runStudioWorkflow,
     sseURL: sseURL
   };
 })();
@@ -2166,18 +2680,19 @@ var TOTAL_STEPS = 8;
 var currentStep = 0;
 var selectedSize = '';
 var ONBOARDING_COPY = {
-  step1_headline: 'Your AI team, visible and working.',
-  step1_subhead: 'WUPHF gives operators one room where AI specialists can claim real work, show progress in public, and pull in a human only when judgment is required. Unlike the original WUPHF.com, this one still works next quarter.',
-  step1_cta: 'Assemble the team',
+  step1_headline: 'Your office, visible and doing real work.',
+  step1_subhead: 'WUPHF gives operators one room where AI specialists can claim real business work, show progress in public, and pull in a human only when judgment is required. Live runs are judged on real outcomes, not proof artifacts or demo theater.',
+  step1_cta: 'Open the office',
   step2_prereqs_title: 'First, make sure you have the tools',
   step2_keys_title: 'Connect your AI providers',
   step2_cta: 'Ready',
-  step3_title: "What's the first thing you want done?",
-  step3_placeholder: 'Or tell me what\'s really on your mind\u2026',
-  step3_skip: "I'll figure it out \u2014 open the empty office",
-  step3_cta: 'Start working',
+  step3_title: 'What should this office do first?',
+  step3_placeholder: 'What should the office invent and start operating?',
+  step3_skip: 'Open the office without a first task',
+  step3_cta: 'Start the first loop',
 };
-
+var BLANK_SLATE_STARTER_TEMPLATE = '__blank_slate__';
+var activeStarterTemplate = '';
 var brokerConnected = false;
 var currentChannel = 'general';
 // channelMetadata maps channel slug → {type: "O"|"D"|"G", name, members, agentSlug}
@@ -2191,11 +2706,12 @@ var DISCONNECT_THRESHOLD = 3;
 var currentApp = null; // null = messages view, 'tasks' | 'requests' | 'calendar'
 var memberActivityPollTimer = null;
 var cachedMembers = []; // latest /office-members data for activity classification
-var cachedTasks = []; // latest /tasks data
+var cachedTasks = []; // latest office-wide /tasks data
 var cachedRequests = []; // latest /requests data for runtime strip
 var cachedUsage = null; // latest /usage data for token counts
 
 var SIDEBAR_APPS = [
+  { id: 'studio',       icon: '\u25B6', name: 'Studio' },
   { id: 'tasks',        icon: '\u2705', name: 'Tasks' },
   { id: 'requests',     icon: '\uD83D\uDCCB', name: 'Requests' },
   { id: 'policies',     icon: '\uD83D\uDEE1', name: 'Policies' },
@@ -2204,6 +2720,1053 @@ var SIDEBAR_APPS = [
   { id: 'activity',     icon: '\uD83D\uDCE6', name: 'Activity' },
   { id: 'health-check', icon: '\uD83D\uDD0D', name: 'Health Check' },
 ];
+
+var STUDIO_STORAGE_KEY = 'wuphf_studio_state_v2';
+var STUDIO_LEGACY_STORAGE_KEY = 'wuphf_youtube_studio_v1';
+var STUDIO_MEMORY_NAMESPACE = 'studio';
+var STUDIO_LEGACY_MEMORY_NAMESPACE = 'youtube_factory';
+var STUDIO_MEMORY_KEY = 'state';
+var STUDIO_LEGACY_MEMORY_KEY = 'studio_state';
+var STUDIO_WORKSPACE_NAMESPACE_PREFIX = 'studio/workspaces/';
+var STUDIO_LEGACY_WORKSPACE_NAMESPACE_PREFIX = 'youtube_factory/workspaces/';
+var STUDIO_MEMORY_KEYS = {
+  config: 'config',
+  runs: 'runs',
+  offers: 'offers',
+  artifacts: 'artifacts'
+};
+var studioBootstrapPackage = createEmptyStudioBootstrapPackage();
+var studioBootstrapPromise = null;
+
+function createEmptyStudioBootstrapPackage() {
+  return {
+    blueprint_id: '',
+    blueprint_label: '',
+    pack_id: '',
+    pack_label: '',
+    source_path: '',
+    connection_provider: '',
+    blueprint: {
+      id: '',
+      name: '',
+      kind: '',
+      description: '',
+      objective: '',
+      stages: [],
+      artifacts: [],
+      capabilities: [],
+      approval_rules: [],
+      workflows: []
+    },
+    starter: {
+      id: '',
+      kicker: '',
+      name: '',
+      badge: '',
+      blurb: '',
+      points: [],
+      defaults: { company: '', description: '', goals: '', priority: '', size: '' },
+      agents: [],
+      channels: [],
+      tasks: [],
+      kickoffTagged: ['ceo'],
+      kickoffMessage: '',
+      generalDesc: ''
+    },
+    bootstrap_config: {
+      channel_name: 'Operation',
+      channel_slug: 'operation',
+      niche: '',
+      audience: 'Founders and operators',
+      positioning: 'Automated operation with repeatable operating assets.',
+      content_pillars: [],
+      content_series: [],
+      monetization_hooks: [],
+      publishing_cadence: 'Cadence pending',
+      lead_magnet: { name: '', cta: '', path: '' },
+      monetization_assets: [],
+      kpi_tracking: []
+    },
+    automation: [],
+    integrations: [],
+    connections: [],
+    smoke_tests: [],
+    workflow_drafts: [],
+    value_capture_plan: [],
+    monetization_ladder: [],
+    workstream_seed: [],
+    queue_seed: [],
+    offers: []
+  };
+}
+
+function normalizeStudioBootstrapPackage(value) {
+  var fallback = createEmptyStudioBootstrapPackage();
+  var next = (value && typeof value === 'object') ? cloneData(value) : {};
+  next.starter = next.starter && typeof next.starter === 'object' ? next.starter : cloneData(fallback.starter);
+  next.blueprint = next.blueprint && typeof next.blueprint === 'object'
+    ? next.blueprint
+    : cloneData(fallback.blueprint);
+  next.blueprint.stages = Array.isArray(next.blueprint.stages) ? next.blueprint.stages : [];
+  next.blueprint.artifacts = Array.isArray(next.blueprint.artifacts) ? next.blueprint.artifacts : [];
+  next.blueprint.capabilities = Array.isArray(next.blueprint.capabilities) ? next.blueprint.capabilities : [];
+  next.blueprint.approval_rules = Array.isArray(next.blueprint.approval_rules) ? next.blueprint.approval_rules : [];
+  next.blueprint.workflows = Array.isArray(next.blueprint.workflows) ? next.blueprint.workflows : [];
+  next.starter.defaults = next.starter.defaults && typeof next.starter.defaults === 'object'
+    ? next.starter.defaults
+    : cloneData(fallback.starter.defaults);
+  next.starter.points = Array.isArray(next.starter.points) ? next.starter.points : [];
+  next.starter.agents = Array.isArray(next.starter.agents) ? next.starter.agents : [];
+  next.starter.channels = Array.isArray(next.starter.channels) ? next.starter.channels : [];
+  next.starter.tasks = Array.isArray(next.starter.tasks) ? next.starter.tasks : [];
+  next.starter.kickoffTagged = Array.isArray(next.starter.kickoffTagged) ? next.starter.kickoffTagged : cloneData(fallback.starter.kickoffTagged);
+  next.bootstrap_config = next.bootstrap_config && typeof next.bootstrap_config === 'object'
+    ? next.bootstrap_config
+    : cloneData(fallback.bootstrap_config);
+  next.bootstrap_config.lead_magnet = next.bootstrap_config.lead_magnet && typeof next.bootstrap_config.lead_magnet === 'object'
+    ? next.bootstrap_config.lead_magnet
+    : cloneData(fallback.bootstrap_config.lead_magnet);
+  next.bootstrap_config.content_pillars = Array.isArray(next.bootstrap_config.content_pillars) ? next.bootstrap_config.content_pillars : [];
+  next.bootstrap_config.content_series = Array.isArray(next.bootstrap_config.content_series) ? next.bootstrap_config.content_series : [];
+  next.bootstrap_config.monetization_hooks = Array.isArray(next.bootstrap_config.monetization_hooks) ? next.bootstrap_config.monetization_hooks : [];
+  next.bootstrap_config.monetization_assets = Array.isArray(next.bootstrap_config.monetization_assets) ? next.bootstrap_config.monetization_assets : [];
+  next.bootstrap_config.kpi_tracking = Array.isArray(next.bootstrap_config.kpi_tracking) ? next.bootstrap_config.kpi_tracking : [];
+  next.automation = Array.isArray(next.automation) ? next.automation : [];
+  next.integrations = Array.isArray(next.integrations) ? next.integrations : [];
+  next.connections = Array.isArray(next.connections) ? next.connections : [];
+  next.smoke_tests = Array.isArray(next.smoke_tests) ? next.smoke_tests : [];
+  next.workflow_drafts = Array.isArray(next.workflow_drafts) ? next.workflow_drafts : [];
+  next.value_capture_plan = Array.isArray(next.value_capture_plan) ? next.value_capture_plan : [];
+  next.monetization_ladder = Array.isArray(next.monetization_ladder) ? next.monetization_ladder : [];
+  next.workstream_seed = Array.isArray(next.workstream_seed) ? next.workstream_seed : [];
+  next.queue_seed = Array.isArray(next.queue_seed) ? next.queue_seed : [];
+  if (next.value_capture_plan.length === 0 && next.monetization_ladder.length > 0) next.value_capture_plan = cloneData(next.monetization_ladder);
+  if (next.monetization_ladder.length === 0 && next.value_capture_plan.length > 0) next.monetization_ladder = cloneData(next.value_capture_plan);
+  if (next.workstream_seed.length === 0 && next.queue_seed.length > 0) next.workstream_seed = cloneData(next.queue_seed);
+  if (next.queue_seed.length === 0 && next.workstream_seed.length > 0) next.queue_seed = cloneData(next.workstream_seed);
+  next.offers = Array.isArray(next.offers) ? next.offers : [];
+  return Object.assign({}, fallback, next);
+}
+
+function studioBootstrapConfig() {
+  return cloneData(normalizeStudioBootstrapPackage(studioBootstrapPackage).bootstrap_config);
+}
+
+function studioWorkflowDrafts() {
+  var bootstrap = studioBootstrapPackageData();
+  var blueprint = studioBlueprintData();
+  var source = [];
+  if (Array.isArray(bootstrap.workflow_drafts) && bootstrap.workflow_drafts.length > 0) {
+    source = bootstrap.workflow_drafts;
+  }
+  if (source.length === 0 && blueprint && Array.isArray(blueprint.workflows) && blueprint.workflows.length > 0) {
+    source = blueprint.workflows;
+  }
+  if (source.length === 0 && blueprint && Array.isArray(blueprint.workflow_drafts) && blueprint.workflow_drafts.length > 0) {
+    source = blueprint.workflow_drafts;
+  }
+  return source.map(function(entry, idx) {
+    var item = entry && typeof entry === 'object' ? entry : {};
+    var key = String(item.skillName || item.skill_name || item.workflowKey || item.workflow_key || item.key || item.id || item.name || ('workflow-' + idx)).trim();
+    var definition = item.definition && typeof item.definition === 'object' ? item.definition : {};
+    if (!definition.key) definition.key = item.workflowKey || item.workflow_key || item.key || key;
+    if (!definition.provider && item.workflow_provider) definition.provider = item.workflow_provider;
+    var integrations = Array.isArray(item.ownedIntegrations) ? item.ownedIntegrations : (Array.isArray(item.integrations) ? item.integrations : []);
+    return {
+      skillName: key,
+      title: item.title || item.name || item.label || key,
+      description: item.description || item.summary || item.copy || '',
+      definition: definition,
+      ownedIntegrations: integrations,
+      trigger: item.trigger || item.schedule || '',
+      schedule: item.schedule || '',
+      checklist: Array.isArray(item.checklist) ? item.checklist : [],
+      inputs: item.inputs && typeof item.inputs === 'object' ? item.inputs : {},
+      mode: item.mode || 'dry_run'
+    };
+  });
+}
+
+function studioSmokeTests() {
+  return cloneData(normalizeStudioBootstrapPackage(studioBootstrapPackage).smoke_tests);
+}
+
+function studioBootstrapConnections() {
+  return cloneData(normalizeStudioBootstrapPackage(studioBootstrapPackage).connections);
+}
+
+function studioMonetizationLadder() {
+  var bootstrap = normalizeStudioBootstrapPackage(studioBootstrapPackage);
+  return cloneData((bootstrap.value_capture_plan && bootstrap.value_capture_plan.length) ? bootstrap.value_capture_plan : bootstrap.monetization_ladder);
+}
+
+function studioQueueSeed() {
+  var bootstrap = normalizeStudioBootstrapPackage(studioBootstrapPackage);
+  return cloneData((bootstrap.workstream_seed && bootstrap.workstream_seed.length) ? bootstrap.workstream_seed : bootstrap.queue_seed);
+}
+
+function studioBootstrapOffers() {
+  return cloneData(normalizeStudioBootstrapPackage(studioBootstrapPackage).offers);
+}
+
+function studioIntegrations() {
+  return cloneData(normalizeStudioBootstrapPackage(studioBootstrapPackage).integrations);
+}
+
+function starterTemplates() {
+  var starter = cloneData(normalizeStudioBootstrapPackage(studioBootstrapPackage).starter);
+  return starter && starter.id ? [starter] : [];
+}
+
+function loadStudioBootstrapPackage(force) {
+  if (!brokerConnected) {
+    return Promise.resolve(normalizeStudioBootstrapPackage(studioBootstrapPackage));
+  }
+  if (!force && studioBootstrapPromise) {
+    return studioBootstrapPromise.then(function(pkg) {
+      return normalizeStudioBootstrapPackage(pkg);
+    });
+  }
+  studioBootstrapPromise = WuphfAPI.getStudioBootstrapPackage()
+    .then(function(response) {
+      var pkg = normalizeStudioBootstrapPackage(response && response.package ? response.package : response);
+      studioBootstrapPackage = pkg;
+      return pkg;
+    })
+    .catch(function() {
+      studioBootstrapPackage = normalizeStudioBootstrapPackage(studioBootstrapPackage);
+      return studioBootstrapPackage;
+    });
+  return studioBootstrapPromise.then(function(pkg) {
+    return normalizeStudioBootstrapPackage(pkg);
+  });
+}
+
+function cloneData(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function copyText(text, successLabel) {
+  if (!text) {
+    showNotice('Nothing to copy yet.', 'error');
+    return Promise.resolve(false);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(function() {
+      showNotice(successLabel || 'Copied to clipboard.', 'success');
+      return true;
+    }).catch(function() {
+      showNotice('Clipboard access failed.', 'error');
+      return false;
+    });
+  }
+  showNotice('Clipboard API unavailable in this browser.', 'error');
+  return Promise.resolve(false);
+}
+
+function studioPriorityRank(priority) {
+  if (priority === 'critical') return 0;
+  if (priority === 'important') return 1;
+  return 2;
+}
+
+function studioBootstrapPackageData() {
+  return normalizeStudioBootstrapPackage(studioBootstrapPackage);
+}
+
+function studioBlueprintData() {
+  var bootstrap = studioBootstrapPackageData();
+  return bootstrap.blueprint && typeof bootstrap.blueprint === 'object' ? bootstrap.blueprint : null;
+}
+
+function studioBlueprintStages() {
+  var bootstrap = studioBootstrapPackageData();
+  var blueprint = studioBlueprintData();
+  var stages = [];
+  if (blueprint) {
+    if (Array.isArray(blueprint.stages)) stages = blueprint.stages;
+    else if (Array.isArray(blueprint.stage_definitions)) stages = blueprint.stage_definitions;
+  }
+  if (stages.length === 0 && Array.isArray(bootstrap.stages)) {
+    stages = bootstrap.stages;
+  }
+  return stages.map(function(stage, idx) {
+    var entry = stage && typeof stage === 'object' ? stage : {};
+    var id = String(entry.id || entry.slug || entry.key || ('stage-' + idx)).toLowerCase();
+    return {
+      id: id,
+      name: entry.name || entry.title || entry.label || ('Stage ' + (idx + 1)),
+      engine: entry.engine || entry.system || entry.owner || '',
+      copy: entry.copy || entry.description || entry.summary || '',
+      gate: entry.gate || entry.exit_criteria || entry.approval || '',
+      status: entry.status || ''
+    };
+  });
+}
+
+function studioBlueprintArtifacts() {
+  var blueprint = studioBlueprintData();
+  var artifacts = blueprint && Array.isArray(blueprint.artifacts) ? blueprint.artifacts : [];
+  return artifacts.map(function(item, idx) {
+    var entry = item && typeof item === 'object' ? item : {};
+    return {
+      id: String(entry.id || entry.slug || entry.key || ('artifact-' + idx)).toLowerCase(),
+      name: entry.name || entry.title || entry.label || ('Artifact ' + (idx + 1)),
+      description: entry.description || entry.summary || ''
+    };
+  });
+}
+
+function studioStageFallback() {
+  return {
+    id: 'pending',
+    name: 'Pending',
+    engine: 'Blueprint loading',
+    copy: 'Stage data will appear once the bootstrap package is loaded.',
+    gate: 'No stage data available.',
+    status: 'pending'
+  };
+}
+
+function studioStageAt(index) {
+  var stages = studioBlueprintStages();
+  if (stages.length === 0) return studioStageFallback();
+  return stages[Math.max(0, Math.min(index || 0, stages.length - 1))] || stages[0];
+}
+
+function studioStarterChannelNames() {
+  var starter = studioBootstrapPackageData().starter || {};
+  var channels = Array.isArray(starter.channels) ? starter.channels : [];
+  return channels.map(function(channel) {
+    return String(channel.slug || channel.name || '').toLowerCase();
+  }).filter(Boolean);
+}
+
+function studioWorkspaceChannelSlugList(channels) {
+  var starterNames = studioStarterChannelNames();
+  var workspaceChannels = (channels || []).filter(function(channel) {
+    var slug = String(channel.slug || channel.name || '').toLowerCase();
+    if (!slug || slug === 'general') return false;
+    if (slug.indexOf('dm-') === 0) return false;
+    if (starterNames.length === 0) return true;
+    return starterNames.indexOf(slug) !== -1 || starterNames.indexOf(String(channel.name || '').toLowerCase()) !== -1;
+  });
+  return workspaceChannels.map(function(channel) {
+    return String(channel.slug || channel.name || '').toLowerCase();
+  }).filter(Boolean);
+}
+
+function studioPrimaryWorkspaceChannel(channels) {
+  return studioWorkspaceChannels(channels)[0] || null;
+}
+
+function studioTaskMatchesWorkspace(task, channels) {
+  var slug = String((task && (task.channel || task.channel_slug || task.channelSlug || task.workspace || task.workspace_slug)) || '').toLowerCase();
+  if (!slug) return false;
+  var workspaceSlugs = studioWorkspaceChannelSlugList(channels);
+  if (workspaceSlugs.length === 0) {
+    return slug !== 'general' && slug.indexOf('dm-') !== 0;
+  }
+  return workspaceSlugs.indexOf(slug) !== -1;
+}
+
+function getBootstrapConnections(state) {
+  var stubMap = {};
+  ((state && state.integrations) || []).forEach(function(item) {
+    stubMap[String(item.name || '').toLowerCase()] = item;
+  });
+  var latestByIntegration = {};
+  studioWorkflowRuns(state).forEach(function(run) {
+    (run.integrations || []).forEach(function(integration) {
+      var existing = latestByIntegration[integration];
+      var runTime = new Date(run.generatedAt || run.finishedAt || run.startedAt || 0).getTime();
+      var existingTime = existing ? new Date(existing.generatedAt || existing.finishedAt || existing.startedAt || 0).getTime() : 0;
+      if (!existing || runTime >= existingTime) {
+        latestByIntegration[integration] = run;
+      }
+    });
+  });
+  return studioBootstrapConnections().map(function(item) {
+    var key = String(item.name || '').toLowerCase();
+    if (stubMap[key] && stubMap[key].detail && !item.stubDetail) {
+      item.stubDetail = stubMap[key].detail;
+    }
+    var latestRun = latestByIntegration[item.integration];
+    if (latestRun) {
+      item.state = latestRun.status === 'success' ? 'smoke_tested' : 'attention_needed';
+      item.lastRunAt = latestRun.generatedAt || latestRun.finishedAt || latestRun.startedAt || '';
+      item.lastMode = latestRun.mode || '';
+      item.lastSummary = latestRun.summary || '';
+    }
+    return item;
+  }).sort(function(a, b) {
+    return studioPriorityRank(a.priority) - studioPriorityRank(b.priority);
+  });
+}
+
+function studioWorkflowRuns(state) {
+  return studioArtifactItems(state).filter(function(item) {
+    return item && item.kind === 'workflow_run';
+  });
+}
+
+function studioSmokeTestForKey(workflowKey) {
+  var tests = studioSmokeTests();
+  for (var i = 0; i < tests.length; i++) {
+    if ((tests[i].workflowKey || '') === workflowKey) return tests[i];
+  }
+  return null;
+}
+
+function studioSkillForDraft(skills, draft) {
+  skills = Array.isArray(skills) ? skills : [];
+  var draftKey = ((draft || {}).definition || {}).key || '';
+  for (var i = 0; i < skills.length; i++) {
+    if ((skills[i].name || '') === draft.skillName) return skills[i];
+    if ((skills[i].workflow_key || skills[i].workflowKey || '') === draftKey) return skills[i];
+  }
+  return null;
+}
+
+function latestStudioWorkflowRun(state, workflowKey) {
+  var runs = studioWorkflowRuns(state).filter(function(run) {
+    return (run.workflowKey || '') === workflowKey;
+  });
+  if (runs.length === 0) return null;
+  runs.sort(function(a, b) {
+    return new Date(b.generatedAt || b.finishedAt || b.startedAt || 0).getTime() - new Date(a.generatedAt || a.finishedAt || a.startedAt || 0).getTime();
+  });
+  return runs[0];
+}
+
+function installStudioWorkflowSkill(draft, createdBy, channel) {
+  return WuphfAPI.post('/skills', {
+    action: 'create',
+    name: draft.skillName,
+    title: draft.title,
+    description: draft.description,
+    content: workflowDraftSkillContent(draft),
+    created_by: createdBy || 'you',
+    channel: channel || currentChannel || 'general',
+    tags: ['studio', 'workflow'].concat((draft.ownedIntegrations || []).map(function(name) { return 'integration:' + name; })),
+    trigger: draft.trigger || '',
+    workflow_provider: ((draft.definition || {}).provider || 'one'),
+    workflow_key: ((draft.definition || {}).key || draft.skillName),
+    workflow_definition: JSON.stringify(draft.definition || {}),
+    workflow_schedule: draft.schedule || ''
+  }).catch(function(err) {
+    if (err && /409\b/.test(err.message || '')) return null;
+    throw err;
+  });
+}
+
+function installAllStudioWorkflowSkills(channel) {
+  return runSerial(studioWorkflowDrafts().map(function(draft) {
+    return function() {
+      return installStudioWorkflowSkill(draft, 'you', channel);
+    };
+  }));
+}
+
+function persistStudioWorkflowRun(state, draft, response) {
+  state = normalizeStudioState(state || defaultStudioState());
+  var artifacts = ensureStudioArtifactState(state);
+  var execution = response && response.execution ? response.execution : {};
+  var workflowEntry = {
+    id: 'wf-' + (((draft.definition || {}).key) || draft.skillName) + '-' + Date.now(),
+    title: draft.title,
+    skillName: draft.skillName,
+    workflowKey: response.workflow_key || ((draft.definition || {}).key) || draft.skillName,
+    provider: response.provider || ((draft.definition || {}).provider) || 'one',
+    mode: response.mode || 'dry_run',
+    status: execution.status || response.status || 'completed',
+    runId: execution.run_id || '',
+    logFile: execution.log_file || '',
+    integrations: response.integrations || draft.ownedIntegrations || [],
+    summary: (studioSmokeTestForKey((draft.definition || {}).key || '') || {}).proof || draft.description || '',
+    generatedAt: new Date().toISOString(),
+    steps: execution.steps || {},
+    events: execution.events || []
+  };
+  artifacts.items.push({
+    id: workflowEntry.id,
+    kind: 'workflow_run',
+    runId: workflowEntry.runId || workflowEntry.workflowKey,
+    title: workflowEntry.title,
+    generatedAt: workflowEntry.generatedAt,
+    summary: workflowEntry.summary,
+    data: {
+      workflow_key: workflowEntry.workflowKey,
+      provider: workflowEntry.provider,
+      status: workflowEntry.status,
+      integrations: workflowEntry.integrations,
+      steps: workflowEntry.steps,
+      events: workflowEntry.events
+    }
+  });
+  state.lastUpdated = new Date().toISOString();
+  return state;
+}
+
+function runStudioWorkflowDraft(draft) {
+  var smoke = studioSmokeTestForKey(((draft.definition || {}).key) || draft.skillName) || { inputs: {}, mode: 'dry_run' };
+  return loadStudioState().then(function(state) {
+    return installStudioWorkflowSkill(draft, 'you', currentChannel || 'general').then(function() {
+      return WuphfAPI.runStudioWorkflow({
+        channel: currentChannel || 'general',
+        actor: 'you',
+        skill_name: draft.skillName,
+        workflow_key: ((draft.definition || {}).key) || draft.skillName,
+        workflow_provider: ((draft.definition || {}).provider) || 'one',
+        workflow_definition: draft.definition || {},
+        inputs: cloneData(smoke.inputs || {}),
+        dry_run: smoke.mode === 'dry_run',
+        mock: smoke.mode === 'mock',
+        integrations: draft.ownedIntegrations || []
+      }).then(function(response) {
+        return persistStudioState(persistStudioWorkflowRun(state, draft, response)).then(function() {
+          return response;
+        });
+      });
+    });
+  }).then(function(response) {
+    rerenderStudioIfOpen();
+    showNotice('Smoke test ran for "' + draft.title + '" via ' + String(response.provider || 'one') + '.', 'success');
+  }).catch(function(err) {
+    showNotice('Could not run workflow: ' + (err && err.message ? err.message : err), 'error');
+  });
+}
+
+function workflowDraftSkillContent(draft) {
+  var lines = [
+    'Workflow owner: ' + draft.title,
+    'Owned integrations: ' + (draft.ownedIntegrations || []).join(', '),
+    'Trigger: ' + (draft.trigger || 'manual'),
+    'Use this as a reusable dry-run or mock harness until production credentials are approved.'
+  ];
+  if (draft.schedule) lines.push('Suggested cadence: ' + draft.schedule);
+  if (((draft.definition || {}).steps || []).length) {
+    lines.push('');
+    lines.push('Workflow steps:');
+    (draft.definition.steps || []).forEach(function(step, index) {
+      var detail = (step.kind || 'step');
+      if (step.platform) detail += ' via ' + step.platform;
+      if (step.action) detail += ' -> ' + step.action;
+      if (step.note) detail += ' — ' + step.note;
+      lines.push((index + 1) + '. ' + step.id + ': ' + detail);
+    });
+  }
+  if ((draft.checklist || []).length) {
+    lines.push('');
+    lines.push('Dry-run checklist:');
+    (draft.checklist || []).forEach(function(item, index) {
+      lines.push((index + 1) + '. ' + item);
+    });
+  }
+  return lines.join('\n');
+}
+
+function starterStudioTemplate() {
+  return starterTemplates()[0] || { defaults: {} };
+}
+
+function cloneStudioBootstrapConfig() {
+  return studioBootstrapConfig();
+}
+
+function buildStarterStudioState(template, companyData) {
+  template = template || starterStudioTemplate();
+  companyData = companyData || {};
+  var defaults = template.defaults || {};
+  var bootstrap = cloneStudioBootstrapConfig();
+  var leadMagnet = bootstrap.lead_magnet || {};
+  var monetizationAssets = bootstrap.monetization_assets || [];
+  var kpis = bootstrap.kpi_tracking || [];
+  return {
+    version: 1,
+    thesisStatus: 'ready_for_ops',
+    bootstrapConfig: bootstrap,
+    workspace: {
+      name: companyData.name || bootstrap.channel_name || defaults.company || 'Operation',
+      thesis: companyData.description || defaults.description || bootstrap.positioning || 'Automated operation with repeatable operating assets.',
+      goal: companyData.goals || defaults.goals || 'Build a repeatable operation system with monetization from day one.',
+      priority: companyData.priority || defaults.priority || 'Stand up the first publishable backlog and the production machine behind it.',
+      size: companyData.size || defaults.size || '2–5',
+      audience: bootstrap.audience || 'Founders and operators',
+      wedge: bootstrap.niche || 'Automated operation',
+      cadence: bootstrap.publishing_cadence || 'Cadence pending',
+      monetization: monetizationAssets.map(function(item) { return item.name; }).join(', ') || 'Revenue capture, owned audience, services, and offers'
+    },
+    automation: studioBootstrapPackage.automation ? cloneData(studioBootstrapPackage.automation) : [],
+    integrations: studioIntegrations(),
+    contentSeries: cloneData(bootstrap.content_series || []),
+    leadMagnet: cloneData(leadMagnet),
+    monetizationAssets: cloneData(monetizationAssets),
+    kpis: cloneData(kpis),
+    offers: studioBootstrapOffers(),
+    artifacts: {
+      items: []
+    },
+    queue: studioQueueSeed(),
+    lastUpdated: new Date().toISOString()
+  };
+}
+
+function defaultStudioState(companyData) {
+  return buildStarterStudioState(starterStudioTemplate(), companyData);
+}
+
+function normalizeStudioState(state) {
+  var fallback = defaultStudioState();
+  var next = (state && typeof state === 'object') ? cloneData(state) : {};
+  next.bootstrapConfig = next.bootstrapConfig && typeof next.bootstrapConfig === 'object' ? next.bootstrapConfig : cloneData(fallback.bootstrapConfig);
+  next.workspace = Object.assign({}, fallback.workspace, next.workspace || {});
+  next.automation = Array.isArray(next.automation) ? next.automation : cloneData(fallback.automation);
+  next.integrations = Array.isArray(next.integrations) ? next.integrations : cloneData(fallback.integrations);
+  next.contentSeries = Array.isArray(next.contentSeries) ? next.contentSeries : cloneData(fallback.contentSeries);
+  next.leadMagnet = next.leadMagnet && typeof next.leadMagnet === 'object' ? next.leadMagnet : cloneData(fallback.leadMagnet);
+  next.monetizationAssets = Array.isArray(next.monetizationAssets) ? next.monetizationAssets : cloneData(fallback.monetizationAssets);
+  next.kpis = Array.isArray(next.kpis) ? next.kpis : cloneData(fallback.kpis);
+  next.offers = Array.isArray(next.offers) ? next.offers : cloneData(fallback.offers);
+  next.artifacts = next.artifacts && typeof next.artifacts === 'object' ? next.artifacts : cloneData(fallback.artifacts);
+  next.artifacts.items = Array.isArray(next.artifacts.items) ? next.artifacts.items : [];
+  next.queue = Array.isArray(next.queue) ? next.queue : cloneData(fallback.queue);
+  next.thesisStatus = next.thesisStatus || fallback.thesisStatus;
+  next.lastUpdated = next.lastUpdated || fallback.lastUpdated;
+  next.version = next.version || fallback.version;
+  return next;
+}
+
+function getStudioState() {
+  try {
+    var raw = localStorage.getItem(STUDIO_STORAGE_KEY) || localStorage.getItem(STUDIO_LEGACY_STORAGE_KEY);
+    if (!raw) return defaultStudioState();
+    var parsed = JSON.parse(raw);
+    return normalizeStudioState(parsed);
+  } catch (_) {
+    return defaultStudioState();
+  }
+}
+
+function saveStudioState(state) {
+  var normalized = normalizeStudioState(state);
+  normalized.lastUpdated = new Date().toISOString();
+  localStorage.setItem(STUDIO_STORAGE_KEY, JSON.stringify(normalized));
+}
+
+function parseStudioMemoryValue(value) {
+  if (!value) return null;
+  try {
+    return normalizeStudioState(JSON.parse(value));
+  } catch (_) {
+    return null;
+  }
+}
+
+function studioWorkspaceSlugFromName(name) {
+  var input = String(name || '').toLowerCase();
+  var slug = input.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug || 'faceless-foundry';
+}
+
+function studioWorkspaceNamespace(workspaceName, bootstrapConfig) {
+  var blueprint = bootstrapConfig && typeof bootstrapConfig === 'object' ? bootstrapConfig.blueprint : null;
+  var source = '';
+  if (blueprint && typeof blueprint === 'object') {
+    source = blueprint.id || blueprint.name || blueprint.slug || '';
+  }
+  if (!source && bootstrapConfig && typeof bootstrapConfig === 'object') {
+    source = bootstrapConfig.blueprint_id || bootstrapConfig.blueprintId || bootstrapConfig.pack_id || bootstrapConfig.template_id || bootstrapConfig.templateId || bootstrapConfig.operation_id || bootstrapConfig.operationId || bootstrapConfig.id || bootstrapConfig.name || bootstrapConfig.pack_label || '';
+  }
+  return STUDIO_WORKSPACE_NAMESPACE_PREFIX + studioWorkspaceSlugFromName(source || workspaceName);
+}
+
+function studioStateFromScopedMemory(memory, fallbackState, preferredNamespace) {
+  var namespaces = memory && typeof memory === 'object' ? Object.keys(memory) : [];
+  var workspaceNS = preferredNamespace && memory && memory[preferredNamespace] ? preferredNamespace : null;
+  if (!workspaceNS) {
+    workspaceNS = namespaces.filter(function(ns) {
+      return ns.indexOf(STUDIO_WORKSPACE_NAMESPACE_PREFIX) === 0;
+    }).sort()[0];
+  }
+  if (!workspaceNS) {
+    workspaceNS = namespaces.filter(function(ns) {
+      return ns.indexOf(STUDIO_LEGACY_WORKSPACE_NAMESPACE_PREFIX) === 0;
+    }).sort()[0];
+  }
+  if (!workspaceNS) return null;
+  var records = memory[workspaceNS] || {};
+  var fallback = normalizeStudioState(fallbackState || defaultStudioState());
+  var config = parseStudioJSON(records[STUDIO_MEMORY_KEYS.config], {
+    version: fallback.version,
+    thesisStatus: fallback.thesisStatus,
+    bootstrapConfig: fallback.bootstrapConfig,
+    workspace: fallback.workspace,
+    automation: fallback.automation,
+    integrations: fallback.integrations,
+    contentSeries: fallback.contentSeries,
+    leadMagnet: fallback.leadMagnet,
+    monetizationAssets: fallback.monetizationAssets,
+    kpis: fallback.kpis,
+    lastUpdated: fallback.lastUpdated
+  });
+  return normalizeStudioState({
+    version: config.version || fallback.version,
+    thesisStatus: config.thesisStatus || fallback.thesisStatus,
+    bootstrapConfig: config.bootstrapConfig || fallback.bootstrapConfig,
+    workspace: config.workspace || fallback.workspace,
+    automation: config.automation || fallback.automation,
+    integrations: config.integrations || fallback.integrations,
+    contentSeries: config.contentSeries || fallback.contentSeries,
+    leadMagnet: config.leadMagnet || fallback.leadMagnet,
+    monetizationAssets: config.monetizationAssets || fallback.monetizationAssets,
+    kpis: config.kpis || fallback.kpis,
+    offers: parseStudioJSON(records[STUDIO_MEMORY_KEYS.offers], fallback.offers),
+    artifacts: parseStudioJSON(records[STUDIO_MEMORY_KEYS.artifacts], fallback.artifacts),
+    queue: parseStudioJSON(records[STUDIO_MEMORY_KEYS.runs], fallback.queue),
+    lastUpdated: config.lastUpdated || fallback.lastUpdated
+  });
+}
+
+function parseStudioJSON(value, fallback) {
+  if (!value) return cloneData(fallback);
+  try {
+    return JSON.parse(value);
+  } catch (_) {
+    return cloneData(fallback);
+  }
+}
+
+function loadStudioState() {
+  if (!brokerConnected) return Promise.resolve(getStudioState());
+  return loadStudioBootstrapPackage().then(function(bootstrap) {
+    var fallbackState = getStudioState();
+    var preferredNamespace = studioWorkspaceNamespace(fallbackState.workspace && fallbackState.workspace.name, bootstrap);
+    return WuphfAPI.getMemory('general')
+      .then(function(data) {
+        var memory = data && data.memory ? data.memory : null;
+        var scoped = studioStateFromScopedMemory(memory, fallbackState, preferredNamespace);
+        if (scoped) return scoped;
+        var ns = memory ? memory[STUDIO_MEMORY_NAMESPACE] : null;
+        if (ns && (ns[STUDIO_MEMORY_KEY] || ns[STUDIO_LEGACY_MEMORY_KEY])) {
+          return parseStudioMemoryValue(ns[STUDIO_MEMORY_KEY] || ns[STUDIO_LEGACY_MEMORY_KEY]);
+        }
+        var legacyNs = memory ? memory[STUDIO_LEGACY_MEMORY_NAMESPACE] : null;
+        return parseStudioMemoryValue(legacyNs && (legacyNs[STUDIO_MEMORY_KEY] || legacyNs[STUDIO_LEGACY_MEMORY_KEY]));
+      })
+      .catch(function() {
+        return null;
+      });
+  });
+}
+
+function persistStudioState(state) {
+  var normalized = normalizeStudioState(state);
+  normalized.lastUpdated = new Date().toISOString();
+  saveStudioState(normalized);
+  if (!brokerConnected) return Promise.resolve(normalized);
+  var workspaceNS = studioWorkspaceNamespace(normalized.workspace && normalized.workspace.name, normalized.bootstrapConfig || {});
+  var configValue = JSON.stringify({
+    version: normalized.version,
+    thesisStatus: normalized.thesisStatus,
+    bootstrapConfig: normalized.bootstrapConfig || {},
+    workspace: normalized.workspace || {},
+    automation: normalized.automation || [],
+    integrations: normalized.integrations || [],
+    contentSeries: normalized.contentSeries || [],
+    leadMagnet: normalized.leadMagnet || {},
+    monetizationAssets: normalized.monetizationAssets || [],
+    kpis: normalized.kpis || [],
+    lastUpdated: normalized.lastUpdated
+  });
+  var runsValue = JSON.stringify(normalized.queue || []);
+  var offersValue = JSON.stringify(normalized.offers || []);
+  var artifactsValue = JSON.stringify(normalized.artifacts || {});
+  return Promise.all([
+    WuphfAPI.setMemory(workspaceNS, STUDIO_MEMORY_KEYS.config, configValue),
+    WuphfAPI.setMemory(workspaceNS, STUDIO_MEMORY_KEYS.runs, runsValue),
+    WuphfAPI.setMemory(workspaceNS, STUDIO_MEMORY_KEYS.offers, offersValue),
+    WuphfAPI.setMemory(workspaceNS, STUDIO_MEMORY_KEYS.artifacts, artifactsValue),
+    WuphfAPI.setMemory(STUDIO_MEMORY_NAMESPACE, STUDIO_MEMORY_KEY, JSON.stringify(normalized))
+  ])
+    .then(function() {
+      return normalized;
+    });
+}
+
+function studioWorkspaceChannels(channels) {
+  var starterNames = studioStarterChannelNames();
+  var workspaceChannels = (channels || []).filter(function(channel) {
+    var slug = String(channel.slug || channel.name || '').toLowerCase();
+    if (!slug || slug === 'general') return false;
+    if (slug.indexOf('dm-') === 0) return false;
+    if (starterNames.length === 0) return true;
+    return starterNames.indexOf(slug) !== -1 || starterNames.indexOf(String(channel.name || '').toLowerCase()) !== -1;
+  });
+  if (workspaceChannels.length === 0 && starterNames.length > 0) {
+    workspaceChannels = (channels || []).filter(function(channel) {
+      var slug = String(channel.slug || channel.name || '').toLowerCase();
+      return slug && slug !== 'general' && slug.indexOf('dm-') !== 0;
+    });
+  }
+  return workspaceChannels;
+}
+
+function isStudioWorkspace(channels) {
+  return studioWorkspaceChannels(channels).length > 0;
+}
+
+function stageNameForRun(run) {
+  var stage = studioStageAt(run && typeof run.stageIndex === 'number' ? run.stageIndex : 0);
+  if (!stage) return 'Pending';
+  if (run.state === 'published') return 'Published';
+  if (run.state === 'ready' && stage.id === 'publish') return 'Ready to publish';
+  return stage.name;
+}
+
+function studioStageCount(state, idx) {
+  return (state.queue || []).filter(function(run) {
+    return run.state !== 'published' && run.stageIndex === idx;
+  }).length;
+}
+
+function computeStudioMetrics(state) {
+  var queue = state.queue || [];
+  var active = queue.filter(function(run) { return run.state !== 'published'; });
+  var ready = queue.filter(function(run) { return run.state === 'ready'; }).length;
+  var published = queue.filter(function(run) { return run.state === 'published'; }).length;
+  var avgCost = active.length ? (active.reduce(function(sum, run) { return sum + (run.unitCost || 0); }, 0) / active.length) : 0;
+  var longCount = queue.filter(function(run) { return run.format === 'Long-form'; }).length;
+  var shortCount = queue.filter(function(run) { return run.format === 'Short'; }).length;
+  return {
+    queueCount: active.length,
+    readyCount: ready,
+    publishedCount: published,
+    avgCost: '$' + avgCost.toFixed(0),
+    modeledMonthlyOpEx: '$' + String((longCount * 18) + (shortCount * 4) + 260)
+  };
+}
+
+function rerenderStudioIfOpen() {
+  if (currentApp !== 'studio') return;
+  var panel = document.getElementById('app-studio');
+  if (panel) renderStudioApp(panel);
+}
+
+function resetStudioDemo() {
+  return persistStudioState(defaultStudioState()).then(function() {
+    rerenderStudioIfOpen();
+  });
+}
+
+function seedStudioQueue() {
+  return loadStudioState().then(function(state) {
+    state = normalizeStudioState(state || defaultStudioState());
+    if ((state.queue || []).length === 0) state.queue = studioQueueSeed();
+    return persistStudioState(state);
+  }).then(function() {
+    rerenderStudioIfOpen();
+  });
+}
+
+function advanceStudioRun(runID) {
+  return loadStudioState().then(function(state) {
+    state = normalizeStudioState(state || defaultStudioState());
+    var run = (state.queue || []).find(function(item) { return item.id === runID; });
+    if (!run || run.state === 'published') return null;
+    var stages = studioBlueprintStages();
+    if (stages.length > 0 && run.stageIndex < stages.length - 1) {
+      run.stageIndex += 1;
+      run.state = run.stageIndex === stages.length - 1 ? 'ready' : 'active';
+    } else {
+      if (run.state === 'ready' && stages.length === 0) {
+        run.state = 'published';
+        run.eta = 'Published';
+      } else if (stages.length === 0) {
+        run.state = 'ready';
+        run.eta = 'Ready';
+      } else {
+        run.state = 'published';
+        run.eta = 'Published';
+      }
+    }
+    return persistStudioState(state);
+  }).then(function() {
+    rerenderStudioIfOpen();
+  });
+}
+
+function advanceStudioBottleneck() {
+  return loadStudioState().then(function(state) {
+    state = normalizeStudioState(state || defaultStudioState());
+    var queue = (state.queue || []).filter(function(run) { return run.state !== 'published'; });
+    if (queue.length === 0) return seedStudioQueue();
+    queue.sort(function(a, b) {
+      if ((a.stageIndex || 0) === (b.stageIndex || 0)) return (b.score || 0) - (a.score || 0);
+      return (a.stageIndex || 0) - (b.stageIndex || 0);
+    });
+    return advanceStudioRun(queue[0].id);
+  });
+}
+
+function studioArtifactForRun(state, kind, runID) {
+  var genericItems = studioArtifactItems(state);
+  for (var i = genericItems.length - 1; i >= 0; i--) {
+    if (genericItems[i] && genericItems[i].runId === runID && genericItems[i].kind === kind) return genericItems[i];
+  }
+  var legacyCollection = studioLegacyArtifactCollectionForKind(kind);
+  var items = legacyCollection ? ((((state || {}).artifacts || {})[legacyCollection]) || []) : [];
+  for (var j = items.length - 1; j >= 0; j--) {
+    if (items[j] && items[j].runId === runID) return Object.assign({ kind: kind }, items[j]);
+  }
+  return null;
+}
+
+function ensureStudioArtifactState(state) {
+  state.artifacts = state.artifacts && typeof state.artifacts === 'object' ? state.artifacts : {};
+  state.artifacts.items = Array.isArray(state.artifacts.items) ? state.artifacts.items : [];
+  return state.artifacts;
+}
+
+function studioLegacyArtifactCollectionForKind(kind) {
+  if (kind === 'topic_packet') return 'topicPackets';
+  if (kind === 'script_brief') return 'scriptBriefs';
+  if (kind === 'publish_package') return 'publishPackages';
+  if (kind === 'workflow_run') return 'workflowRuns';
+  return '';
+}
+
+function studioArtifactReadinessForRun(state, runID) {
+  var blueprintArtifacts = studioBlueprintArtifacts();
+  if (blueprintArtifacts.length === 0) {
+    blueprintArtifacts = [
+      { id: 'objective_brief', name: 'Objective brief' },
+      { id: 'execution_packet', name: 'Execution packet' },
+      { id: 'approval_checklist', name: 'Approval checklist' }
+    ];
+  }
+  return blueprintArtifacts.map(function(item) {
+    var record = studioArtifactForRun(state, item.id, runID);
+    return {
+      label: item.name,
+      ready: !!record
+    };
+  });
+}
+
+function studioArtifactItems(state) {
+  return ((((state || {}).artifacts || {}).items) || []).slice();
+}
+
+function studioRecentGeneratedArtifacts(state, limit) {
+  var items = studioArtifactItems(state).filter(function(item) {
+    return item && item.kind !== 'workflow_run';
+  });
+  items.sort(function(a, b) {
+    return new Date(b.generatedAt || 0).getTime() - new Date(a.generatedAt || 0).getTime();
+  });
+  if (typeof limit === 'number') return items.slice(0, limit);
+  return items;
+}
+
+function storeGeneratedStudioPackage(state, run, pkg, generatedArtifacts) {
+  state = normalizeStudioState(state);
+  var artifacts = ensureStudioArtifactState(state);
+  var generatedAt = new Date().toISOString();
+  var runID = run.id;
+  var sourceArtifacts = Array.isArray(generatedArtifacts) && generatedArtifacts.length > 0 ? generatedArtifacts : Object.keys(pkg || {}).sort().map(function(kind) {
+    return { kind: kind, title: run.title, data: pkg[kind] || {} };
+  });
+  sourceArtifacts.forEach(function(item, idx) {
+    var kind = (item && item.kind) || 'artifact';
+    artifacts.items.push({
+      id: (item && item.id) || ('artifact-' + runID + '-' + idx + '-' + Date.now()),
+      kind: kind,
+      runId: runID,
+      title: (item && item.title) || run.title,
+      generatedAt: generatedAt,
+      summary: (item && item.summary) || '',
+      data: item && item.data ? item.data : {}
+    });
+  });
+  state.queue = (state.queue || []).map(function(item) {
+    if (item.id !== runID) return item;
+    var next = Object.assign({}, item);
+    next.generatedAt = generatedAt;
+    next.packageStatus = 'generated';
+    if ((next.stageIndex || 0) < 1) next.stageIndex = 1;
+    return next;
+  });
+  return state;
+}
+
+function storeGeneratedStudioWorkflowRuns(state, run, response) {
+  state = normalizeStudioState(state);
+  var artifacts = ensureStudioArtifactState(state);
+  (response && response.stub_executions ? response.stub_executions : []).forEach(function(execution, idx) {
+    var workflowEntry = {
+      id: execution.id || ('wf-follow-up-' + run.id + '-' + idx + '-' + Date.now()),
+      title: run.title + ' follow-up workflow',
+      skillName: execution.workflow_key || 'operation-follow-up',
+      workflowKey: execution.workflow_key || 'operation-follow-up',
+      provider: execution.provider || 'one',
+      mode: execution.mode || 'dry_run',
+      status: execution.status || 'success',
+      runId: run.id,
+      logFile: '',
+      integrations: execution.integrations || [],
+      summary: execution.summary || 'Operation follow-up stub executed.',
+      generatedAt: new Date().toISOString(),
+      steps: execution.output || {},
+      events: [execution.input || {}, execution.output || {}]
+    };
+    artifacts.items.push({
+      id: workflowEntry.id,
+      kind: 'workflow_run',
+      runId: run.id,
+      title: workflowEntry.title,
+      generatedAt: workflowEntry.generatedAt,
+      summary: workflowEntry.summary,
+      data: {
+        workflow_key: workflowEntry.workflowKey,
+        provider: workflowEntry.provider,
+        status: workflowEntry.status,
+        integrations: workflowEntry.integrations,
+        steps: workflowEntry.steps,
+        events: workflowEntry.events
+      }
+    });
+  });
+  state.lastUpdated = new Date().toISOString();
+  return state;
+}
+
+function generateStudioPackageForRun(run) {
+  return loadStudioState().then(function(state) {
+    state = normalizeStudioState(state);
+    return WuphfAPI.generateStudioPackage({
+      channel: currentChannel || 'general',
+      actor: 'human',
+      workspace: state.workspace,
+      run: run,
+      artifacts: studioBlueprintArtifacts(),
+      offers: state.offers || []
+    }).then(function(response) {
+      var pkg = response && response.package ? response.package : null;
+      if (!pkg) throw new Error('No package returned');
+      var nextState = storeGeneratedStudioPackage(state, run, pkg, response && response.artifacts);
+      nextState = storeGeneratedStudioWorkflowRuns(nextState, run, response);
+      return persistStudioState(nextState).then(function() {
+        return response;
+      });
+    });
+  }).then(function() {
+    rerenderStudioIfOpen();
+    showNotice('Generated a Codex package and queued follow-up workflows for "' + run.title + '".', 'success');
+  }).catch(function(err) {
+    showNotice('Could not generate package: ' + (err && err.message ? err.message : err), 'error');
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════
 //   HASH ROUTER — single source of truth for navigation state
@@ -2291,7 +3854,7 @@ function _cleanupAllViews() {
   if (typeof recoveryViewOpen !== 'undefined' && recoveryViewOpen) closeRecoveryView();
 
   // Hide ALL app panels
-  var allAppIds = ['app-tasks', 'app-requests', 'app-policies', 'app-calendar', 'app-skills', 'app-activity', 'app-artifacts'];
+  var allAppIds = ['app-studio', 'app-tasks', 'app-requests', 'app-policies', 'app-calendar', 'app-skills', 'app-activity', 'app-artifacts'];
   allAppIds.forEach(function(pid) {
     var p = document.getElementById(pid);
     if (p) { p.classList.remove('active'); p.style.display = 'none'; }
@@ -2344,6 +3907,7 @@ function _enterChannel(name) {
   document.getElementById('channel-title').textContent = '# ' + name;
   document.getElementById('channel-desc').textContent = ch ? ch.desc : '';
   document.getElementById('composer-input').placeholder = 'Message #' + name + ' \u2014 type / for commands, @ to mention';
+  document.getElementById('composer-input').setAttribute('aria-label', 'Message #' + name + ' channel');
 
   markChannelSeen(name);
   _refreshSidebars();
@@ -2450,7 +4014,24 @@ function _refreshSidebars() {
   renderSidebarApps();
 }
 
-var AGENTS = [
+function cloneAgents(agents) {
+  return (agents || []).map(function(agent) {
+    var copy = {};
+    Object.keys(agent).forEach(function(key) {
+      var value = agent[key];
+      copy[key] = Array.isArray(value) ? value.slice() : value;
+    });
+    return copy;
+  });
+}
+
+function cloneChannels(channels) {
+  return (channels || []).map(function(channel) {
+    return { name: channel.name, desc: channel.desc };
+  });
+}
+
+var DEFAULT_AGENTS = [
   { slug: 'ceo',      emoji: '\uD83D\uDC54', name: 'CEO',               role: 'Strategy, delegation, goal tracking',           checked: true,  type: 'lead' },
   { slug: 'pm',       emoji: '\uD83D\uDCCB', name: 'Product Manager',   role: 'Roadmap, prioritization, user stories',         checked: true,  type: 'lead' },
   { slug: 'frontend', emoji: '\uD83C\uDFA8', name: 'Frontend Engineer', role: 'UI/UX implementation, components, styling',     checked: true,  type: 'specialist' },
@@ -2504,11 +4085,14 @@ var AGENT_RESPONSES = [
   'On it. I\'ll have something for you to review within the hour. That\'s what she said... about the deadline.',
 ];
 
-var CHANNELS = [
+var DEFAULT_CHANNELS = [
   { name: 'general', desc: 'The shared office — Pretzel Day is every day here' },
   { name: 'engineering', desc: 'Technical discussions and code reviews — Dwight enforces standards' },
   { name: 'marketing', desc: 'Campaigns, content, and positioning — Ryan\'s domain, before WUPHF happened' },
 ];
+
+var AGENTS = cloneAgents(DEFAULT_AGENTS);
+var CHANNELS = cloneChannels(DEFAULT_CHANNELS);
 
 // ─── Progress ───
 function renderProgress() {
@@ -2540,17 +4124,303 @@ function goToStep(n) {
   renderProgress();
 }
 
+function findStarterTemplate(id) {
+  return starterTemplates().find(function(template) { return template.id === id; }) || null;
+}
+
+function setFieldValue(id, value) {
+  var input = document.getElementById(id);
+  if (input) input.value = value || '';
+}
+
+function setFirstExistingFieldValue(ids, value) {
+  (ids || []).some(function(id) {
+    var input = document.getElementById(id);
+    if (!input) return false;
+    input.value = value || '';
+    return true;
+  });
+}
+
+function getFirstExistingFieldValue(ids) {
+  for (var i = 0; i < (ids || []).length; i++) {
+    var input = document.getElementById(ids[i]);
+    if (input) return (input.value || '').trim();
+  }
+  return '';
+}
+
+function selectSize(size) {
+  selectedSize = size || '';
+  var container = document.getElementById('size-options');
+  if (!container) return;
+  container.querySelectorAll('.size-btn').forEach(function(btn) {
+    btn.classList.toggle('selected', !!size && btn.textContent === size);
+  });
+}
+
+function renderStarterTemplates() {
+  var container = document.getElementById('starter-templates');
+  if (!container) return;
+  container.textContent = '';
+  var templates = starterTemplates();
+  if (!activeStarterTemplate) activeStarterTemplate = BLANK_SLATE_STARTER_TEMPLATE;
+
+  var blankSlateCard = document.createElement('button');
+  blankSlateCard.className = 'starter-card' + (activeStarterTemplate === BLANK_SLATE_STARTER_TEMPLATE ? ' active' : '');
+  blankSlateCard.type = 'button';
+  blankSlateCard.addEventListener('click', function() {
+    applyBlankSlateStarter();
+  });
+
+  var blankSlateTop = document.createElement('div');
+  blankSlateTop.className = 'starter-card-top';
+  var blankSlateKicker = document.createElement('div');
+  blankSlateKicker.className = 'starter-card-kicker';
+  blankSlateKicker.innerHTML = '<span class="starter-card-dot" aria-hidden="true"></span><span>From scratch</span>';
+  var blankSlateBadge = document.createElement('div');
+  blankSlateBadge.className = 'starter-card-badge';
+  blankSlateBadge.textContent = 'No blueprint';
+  blankSlateTop.appendChild(blankSlateKicker);
+  blankSlateTop.appendChild(blankSlateBadge);
+
+  var blankSlateTitle = document.createElement('div');
+  blankSlateTitle.className = 'starter-card-title';
+  blankSlateTitle.textContent = 'Start from scratch';
+
+  var blankSlateCopy = document.createElement('p');
+  blankSlateCopy.className = 'starter-card-copy';
+  blankSlateCopy.textContent = 'Skip the preset business blueprints. The office will synthesize the first operating model from your directive and connected capabilities.';
+
+  var blankSlatePoints = document.createElement('div');
+  blankSlatePoints.className = 'starter-card-points';
+  [
+    { label: 'Path', value: 'Directive-first synthesis' },
+    { label: 'Best for', value: 'New businesses and fresh operating models' },
+    { label: 'Output', value: 'Blueprint, team, channels, and first live loop' }
+  ].forEach(function(point) {
+    var pointCard = document.createElement('div');
+    pointCard.className = 'starter-card-point';
+    pointCard.innerHTML = '<span class="starter-card-label">' + point.label + '</span><div class="starter-card-value">' + point.value + '</div>';
+    blankSlatePoints.appendChild(pointCard);
+  });
+
+  blankSlateCard.appendChild(blankSlateTop);
+  blankSlateCard.appendChild(blankSlateTitle);
+  blankSlateCard.appendChild(blankSlateCopy);
+  blankSlateCard.appendChild(blankSlatePoints);
+  container.appendChild(blankSlateCard);
+
+  templates.forEach(function(template) {
+    var card = document.createElement('button');
+    card.className = 'starter-card' + (activeStarterTemplate === template.id ? ' active' : '');
+    card.type = 'button';
+    card.addEventListener('click', function() {
+      applyStarterTemplate(template.id);
+    });
+
+    var top = document.createElement('div');
+    top.className = 'starter-card-top';
+
+    var kicker = document.createElement('div');
+    kicker.className = 'starter-card-kicker';
+    kicker.innerHTML = '<span class="starter-card-dot" aria-hidden="true"></span><span>' + template.kicker + '</span>';
+
+    var badge = document.createElement('div');
+    badge.className = 'starter-card-badge';
+    badge.textContent = template.badge;
+
+    top.appendChild(kicker);
+    top.appendChild(badge);
+
+    var title = document.createElement('div');
+    title.className = 'starter-card-title';
+    title.textContent = template.name;
+
+    var copy = document.createElement('p');
+    copy.className = 'starter-card-copy';
+    copy.textContent = template.blurb;
+
+    var points = document.createElement('div');
+    points.className = 'starter-card-points';
+    (template.points || []).forEach(function(point) {
+      var pointCard = document.createElement('div');
+      pointCard.className = 'starter-card-point';
+      pointCard.innerHTML = '<span class="starter-card-label">' + point.label + '</span><div class="starter-card-value">' + point.value + '</div>';
+      points.appendChild(pointCard);
+    });
+
+    card.appendChild(top);
+    card.appendChild(title);
+    card.appendChild(copy);
+    card.appendChild(points);
+    container.appendChild(card);
+  });
+}
+
+function applyStarterTemplate(id) {
+  if (id === BLANK_SLATE_STARTER_TEMPLATE) {
+    applyBlankSlateStarter();
+    return;
+  }
+  var template = findStarterTemplate(id);
+  if (!template) return;
+  activeStarterTemplate = template.id;
+  setFirstExistingFieldValue(['q-company', 'wiz-company'], template.defaults.company);
+  setFirstExistingFieldValue(['q-description', 'wiz-description'], template.defaults.description);
+  setFirstExistingFieldValue(['q-goals'], template.defaults.goals);
+  setFirstExistingFieldValue(['q-priority', 'wiz-priority'], template.defaults.priority);
+  AGENTS = cloneAgents(template.agents);
+  selectSize(template.defaults.size);
+  renderStarterTemplates();
+  if (currentStep >= 3) renderTeamGrid();
+}
+
+function applyBlankSlateStarter() {
+  activeStarterTemplate = BLANK_SLATE_STARTER_TEMPLATE;
+  applyStarterPreview(null);
+  renderStarterTemplates();
+  if (currentStep >= 3) renderTeamGrid();
+}
+
+function runSerial(steps) {
+  return steps.reduce(function(promise, step) {
+    return promise.then(step);
+  }, Promise.resolve());
+}
+
+function safePost(path, body) {
+  return WuphfAPI.post(path, body).catch(function(err) {
+    console.warn('[wuphf] non-fatal setup error for ' + path + ':', err && err.message ? err.message : err);
+    return null;
+  });
+}
+
+function selectedAgentSlugs() {
+  return AGENTS.filter(function(agent) { return agent.checked; }).map(function(agent) { return agent.slug; });
+}
+
+function buildStarterChannels(template, selectedSlugs) {
+  return (template.channels || []).map(function(channel) {
+    var members = (channel.members || []).filter(function(member) {
+      return selectedSlugs.indexOf(member) !== -1;
+    });
+    if (members.length === 0) return null;
+    return {
+      slug: channel.slug,
+      name: channel.name || channel.slug,
+      description: channel.description,
+      members: members
+    };
+  }).filter(Boolean);
+}
+
+function applyStarterPreview(template) {
+  if (!template) {
+    CHANNELS = cloneChannels(DEFAULT_CHANNELS);
+    return;
+  }
+  var starterChannels = buildStarterChannels(template, selectedAgentSlugs()).map(function(channel) {
+    return { name: channel.name, desc: channel.description };
+  });
+  CHANNELS = [{ name: 'general', desc: template.generalDesc || 'Command deck for the business launch.' }].concat(starterChannels);
+}
+
+function setupStarterOffice(template) {
+  if (!template) return Promise.resolve();
+
+  var selectedSlugs = selectedAgentSlugs();
+  var customAgents = (template.agents || []).filter(function(agent) {
+    return agent.slug !== 'ceo' && !agent.builtIn && selectedSlugs.indexOf(agent.slug) !== -1;
+  });
+  var channels = buildStarterChannels(template, selectedSlugs);
+  var activeChannels = {};
+  channels.forEach(function(channel) { activeChannels[channel.slug] = true; });
+  var tasks = (template.tasks || []).filter(function(task) {
+    return activeChannels[task.channel] && selectedSlugs.indexOf(task.owner) !== -1;
+  });
+
+  return runSerial(customAgents.map(function(agent) {
+    return function() {
+      return safePost('/office-members', {
+        action: 'create',
+        slug: agent.slug,
+        name: agent.name,
+        role: agent.role,
+        expertise: agent.expertise || [],
+        personality: agent.personality || '',
+        created_by: 'you'
+      });
+    };
+  })).then(function() {
+    return runSerial(channels.map(function(channel) {
+      return function() {
+        return safePost('/channels', {
+          action: 'create',
+          slug: channel.slug,
+          name: channel.name,
+          description: channel.description,
+          members: channel.members,
+          created_by: 'you'
+        });
+      };
+    }));
+  }).then(function() {
+    return runSerial(channels.map(function(channel) {
+      return function() {
+        return runSerial((channel.members || []).map(function(member) {
+          return function() {
+            return safePost('/channel-members', {
+              channel: channel.slug,
+              action: 'add',
+              slug: member
+            });
+          };
+        }));
+      };
+    }));
+  }).then(function() {
+    return runSerial(tasks.map(function(task) {
+      return function() {
+        return safePost('/tasks', {
+          action: 'create',
+          channel: task.channel,
+          title: task.title,
+          details: task.details,
+          owner: task.owner,
+          created_by: 'you'
+        });
+      };
+    }));
+  }).then(function() {
+    return safePost('/messages', {
+      from: 'you',
+      channel: 'general',
+      tagged: template.kickoffTagged || ['ceo'],
+      content: template.kickoffMessage
+    });
+  });
+}
+
+function setupStarterStudio(template, companyData) {
+  if (!template) return Promise.resolve();
+  return persistStudioState(buildStarterStudioState(template, companyData)).then(function() {
+    if (!brokerConnected) return null;
+    return installAllStudioWorkflowSkills('general');
+  });
+}
+
 // ─── Size options ───
 function renderSizeOptions() {
   var container = document.getElementById('size-options');
+  container.textContent = '';
   ['Just me', '2\u20135', '5\u201320', '20+'].forEach(function(size) {
     var btn = document.createElement('button');
     btn.className = 'size-btn';
+    if (selectedSize === size) btn.classList.add('selected');
     btn.textContent = size;
     btn.addEventListener('click', function() {
-      selectedSize = size;
-      container.querySelectorAll('.size-btn').forEach(function(b) { b.classList.remove('selected'); });
-      btn.classList.add('selected');
+      selectSize(size);
     });
     container.appendChild(btn);
   });
@@ -2646,10 +4516,19 @@ function renderAPIKeys() {
 
 // ─── Build team ───
 function buildTeam() {
+  var starter = activeStarterTemplate === BLANK_SLATE_STARTER_TEMPLATE ? null : findStarterTemplate(activeStarterTemplate);
+  if (starter) {
+    AGENTS = cloneAgents(starter.agents);
+    applyStarterPreview(starter);
+    renderTeamGrid();
+    goToStep(3);
+    return;
+  }
+
   var desc = (
-    (document.getElementById('q-description') ? document.getElementById('q-description').value : '') + ' ' +
-    (document.getElementById('q-goals') ? document.getElementById('q-goals').value : '') + ' ' +
-    (document.getElementById('q-priority') ? document.getElementById('q-priority').value : '')
+    getFirstExistingFieldValue(['q-description', 'wiz-description']) + ' ' +
+    getFirstExistingFieldValue(['q-goals']) + ' ' +
+    getFirstExistingFieldValue(['q-priority', 'wiz-priority'])
   ).toLowerCase();
 
   AGENTS.forEach(function(a) {
@@ -2713,17 +4592,15 @@ function renderTeamGrid() {
 
 // ─── Launch ───
 function launchOffice() {
-  // Persist onboarding answers to broker config — fire and forget
+  var starter = activeStarterTemplate === BLANK_SLATE_STARTER_TEMPLATE ? null : findStarterTemplate(activeStarterTemplate);
   var companyData = {
-    name: (document.getElementById('q-company') ? document.getElementById('q-company').value.trim() : ''),
-    description: (document.getElementById('q-description') ? document.getElementById('q-description').value.trim() : ''),
-    goals: (document.getElementById('q-goals') ? document.getElementById('q-goals').value.trim() : ''),
+    name: getFirstExistingFieldValue(['q-company', 'wiz-company']),
+    description: getFirstExistingFieldValue(['q-description', 'wiz-description']),
+    goals: getFirstExistingFieldValue(['q-goals']),
     size: selectedSize || '',
-    priority: (document.getElementById('q-priority') ? document.getElementById('q-priority').value.trim() : '')
+    priority: getFirstExistingFieldValue(['q-priority', 'wiz-priority'])
   };
-  if (companyData.name || companyData.description || companyData.goals) {
-    WuphfAPI.post('/company', companyData).catch(function() {});
-  }
+  applyStarterPreview(starter);
 
   var _legacyOnboarding = document.getElementById('onboarding');
   if (_legacyOnboarding) _legacyOnboarding.style.display = 'none';
@@ -2733,6 +4610,23 @@ function launchOffice() {
       if (data.status === 'ok') brokerConnected = true;
     })
     .catch(function() {})
+    .then(function() {
+      var setupWork = [];
+      if (starter) {
+        setupWork.push(function() { return setupStarterStudio(starter, companyData); });
+      }
+      if (!brokerConnected) return runSerial(setupWork);
+      if (companyData.name || companyData.description || companyData.goals || companyData.size || companyData.priority) {
+        setupWork.push(function() { return safePost('/company', companyData); });
+      }
+      if (starter) {
+        setupWork.push(function() { return setupStarterOffice(starter); });
+      }
+      return runSerial(setupWork);
+    })
+    .catch(function(err) {
+      console.warn('[wuphf] launch setup failed:', err && err.message ? err.message : err);
+    })
     .then(function() {
       // Fetch real pack members so the splash can render the correct cast
       // (see ISSUE-003). If the fetch fails, fall back to the legacy intro.
@@ -3298,11 +5192,15 @@ function classifyActivity(member) {
   return { state: 'lurking', label: 'lurking', dotClass: 'lurking' };
 }
 function findAgentTask(slug) {
+  var best = null;
   for (var i = 0; i < cachedTasks.length; i++) {
     var t = cachedTasks[i];
-    if (t.owner === slug && t.status !== 'done' && t.status !== 'completed') return t;
+    if (t.owner !== slug) continue;
+    var status = normalizeTaskStatus(t.status);
+    if (status === 'done' || status === 'completed') continue;
+    if (!best || liveWorkStatusRank(t) < liveWorkStatusRank(best)) best = t;
   }
-  return null;
+  return best;
 }
 // ─── Office Aside: thought bubble text generator ───
 var _officeAsideLists = {
@@ -3452,6 +5350,553 @@ function switchApp(appId) {
   }
   navigate('#/apps/' + encodeURIComponent(appId));
 }
+
+function studioBadgeClass(status) {
+  return status === 'build_now' ? 'badge badge-green' : 'badge badge-yellow';
+}
+
+function studioBadgeLabel(status) {
+  return status === 'build_now' ? 'Build now' : 'Stub first';
+}
+
+function renderStudioEmptyState(panel, channels) {
+  var bootstrap = normalizeStudioBootstrapPackage(studioBootstrapPackage);
+  var brand = ((studioBlueprintData() || {}).name) || bootstrap.blueprint_label || bootstrap.pack_label || bootstrap.starter.name || 'operation';
+  panel.style.overflow = 'auto';
+  var shell = el('div', { className: 'studio-shell' });
+  var hero = el('section', { className: 'studio-hero' });
+  var grid = el('div', { className: 'studio-hero-grid' });
+  var left = el('div', null, [
+    el('div', { className: 'studio-kicker' }, 'Studio'),
+    el('h2', { className: 'studio-title' }, 'The control room is not initialized yet.'),
+    el('p', { className: 'studio-copy' }, 'The current app already has the team and lanes, but the Studio state still needs to be seeded from the active blueprint so the web UI can act like a real control plane instead of a blank panel.')
+  ]);
+  var actions = el('div', { className: 'studio-actions' });
+  var seedBtn = el('button', { className: 'btn btn-primary', onClick: function() {
+    setupStarterStudio(starterStudioTemplate(), {}).then(function() {
+      rerenderStudioIfOpen();
+      showNotice('Studio seeded from the active blueprint.', 'success');
+    }).catch(function(err) {
+      showNotice('Studio seed failed: ' + (err && err.message ? err.message : err), 'error');
+    });
+  } }, 'Seed Studio');
+  actions.appendChild(seedBtn);
+  left.appendChild(actions);
+
+  var workspaceChannels = studioWorkspaceChannels(channels);
+  var right = el('div', { className: 'studio-aside' }, [
+    el('div', { className: 'studio-aside-card' }, [
+      el('div', { className: 'studio-card-kicker' }, workspaceChannels.length > 0 ? 'Workspace detected' : 'Suggested next step'),
+      el('div', { className: 'studio-aside-title' }, workspaceChannels.length > 0 ? 'Existing workspace lanes found' : ('Seed ' + brand)),
+      el('div', { className: 'studio-aside-copy' }, workspaceChannels.length > 0
+        ? 'This workspace already has execution lanes. Seeding Studio will make those lanes visible in one product view and persist the factory state in broker memory.'
+        : 'Seeding Studio loads the active blueprint, queue seed, workflow drafts, and integration harness so the business starts from package data instead of local browser defaults.')
+    ])
+  ]);
+
+  grid.appendChild(left);
+  grid.appendChild(right);
+  hero.appendChild(grid);
+  shell.appendChild(hero);
+  panel.appendChild(shell);
+}
+
+function renderStudioApp(panel) {
+  panel.style.overflow = 'auto';
+  panel.textContent = '';
+  panel.appendChild(el('div', {
+    style: {
+      padding: '40px 20px',
+      textAlign: 'center',
+      color: 'var(--text-tertiary)',
+      fontSize: '14px'
+    }
+  }, 'Loading Studio...'));
+
+  var channelPromise = brokerConnected
+    ? WuphfAPI.getChannels().catch(function() { return { channels: [] }; })
+    : Promise.resolve({
+        channels: (CHANNELS || []).map(function(channel) {
+          return { name: channel.name, description: channel.desc || '' };
+        })
+      });
+  var taskPromise = brokerConnected
+    ? WuphfAPI.get('/tasks', { all_channels: true, viewer_slug: 'human' }).catch(function() { return { tasks: [] }; })
+    : Promise.resolve({ tasks: cachedTasks || [] });
+  var skillPromise = brokerConnected
+    ? WuphfAPI.getSkills().catch(function() { return { skills: [] }; })
+    : Promise.resolve({ skills: [] });
+
+  loadStudioBootstrapPackage().then(function(bootstrap) {
+    return Promise.all([loadStudioState(), channelPromise, taskPromise, skillPromise]).then(function(results) {
+      return {
+        bootstrap: bootstrap,
+        state: results[0],
+        channels: results[1].channels || [],
+        tasks: results[2].tasks || [],
+        skills: results[3].skills || []
+      };
+    });
+  }).then(function(results) {
+    var bootstrap = results.bootstrap;
+    var state = results.state;
+    var channels = results.channels || [];
+    var tasks = results.tasks || [];
+    var skills = results.skills || [];
+    var drafts = studioWorkflowDrafts();
+
+    if (!state && isStudioWorkspace(channels)) {
+      state = defaultStudioState();
+      persistStudioState(state).catch(function() {});
+    }
+
+    panel.textContent = '';
+    if (!state) {
+      renderStudioEmptyState(panel, channels);
+      return;
+    }
+
+    state = normalizeStudioState(state);
+    var studioChannels = studioWorkspaceChannels(channels);
+    var studioTasks = (tasks || []).filter(function(task) {
+      return studioTaskMatchesWorkspace(task, studioChannels) && task.status !== 'done' && task.status !== 'completed';
+    });
+    var workflowRuns = studioWorkflowRuns(state);
+    var missingWorkflowSkills = drafts.filter(function(draft) {
+      return !studioSkillForDraft(skills, draft);
+    });
+    var metrics = computeStudioMetrics(state);
+
+    var shell = el('div', { className: 'studio-shell' });
+    var hero = el('section', { className: 'studio-hero' });
+    var heroGrid = el('div', { className: 'studio-hero-grid' });
+    var left = el('div', null, [
+      el('div', { className: 'studio-kicker' }, 'Operation control plane'),
+      el('h2', { className: 'studio-title' }, state.workspace.name || bootstrap.blueprint_label || bootstrap.pack_label || 'Operation'),
+      el('p', { className: 'studio-copy' }, state.workspace.thesis || (bootstrap.bootstrap_config && bootstrap.bootstrap_config.positioning) || 'A repeatable operating system.')
+    ]);
+    var chipRow = el('div', { className: 'studio-chip-row' }, [
+      el('div', { className: 'studio-chip' }, state.workspace.wedge || (bootstrap.bootstrap_config && bootstrap.bootstrap_config.niche) || 'Operation'),
+      el('div', { className: 'studio-chip' }, state.workspace.audience || 'Founders and operators'),
+      el('div', { className: 'studio-chip' }, state.workspace.cadence || (bootstrap.bootstrap_config && bootstrap.bootstrap_config.publishing_cadence) || 'Cadence pending'),
+      el('div', { className: 'studio-chip' }, state.workspace.monetization || 'Value capture pending')
+    ]);
+    left.appendChild(chipRow);
+    left.appendChild(el('div', { className: 'studio-copy' }, state.workspace.goal || 'Publish consistently and turn the operation into a revenue engine.'));
+
+    var actions = el('div', { className: 'studio-actions' }, [
+      el('button', { className: 'btn btn-primary', onClick: function() {
+        advanceStudioBottleneck().then(function() {
+          showNotice('Advanced the current bottleneck stage.', 'success');
+        }).catch(function(err) {
+          showNotice('Could not advance bottleneck: ' + (err && err.message ? err.message : err), 'error');
+        });
+      } }, 'Advance Bottleneck'),
+      el('button', { className: 'btn btn-ghost', onClick: function() {
+        resetStudioDemo().then(function() {
+          showNotice('Studio queue reset to the starter default.', 'success');
+        }).catch(function(err) {
+          showNotice('Could not reset Studio: ' + (err && err.message ? err.message : err), 'error');
+        });
+      } }, 'Reset Queue')
+    ]);
+    var primaryWorkspaceChannel = studioPrimaryWorkspaceChannel(studioChannels);
+    if (primaryWorkspaceChannel) {
+      actions.appendChild(el('button', { className: 'btn btn-secondary', onClick: function() {
+        navigate('#/channels/' + encodeURIComponent(primaryWorkspaceChannel.name || primaryWorkspaceChannel.slug));
+      } }, 'Open Primary Lane'));
+    }
+    left.appendChild(actions);
+
+    var right = el('div', { className: 'studio-aside' });
+    var laneCard = el('div', { className: 'studio-aside-card' }, [
+      el('div', { className: 'studio-card-kicker' }, 'Live workspace lanes'),
+      el('div', { className: 'studio-aside-title' }, studioChannels.length > 0 ? String(studioChannels.length) + ' workspace lanes active' : 'Starter lanes pending'),
+      el('div', { className: 'studio-aside-copy' }, 'These are the operating lanes the office can route work through right now. The Studio panel now reflects them instead of pretending they do not exist.')
+    ]);
+    var laneList = el('div', { className: 'studio-aside-list' });
+    (studioChannels.length > 0 ? studioChannels : [{ name: 'workspace-command', description: 'Seed the active blueprint to create specialist lanes.' }]).slice(0, 4).forEach(function(channel) {
+      laneList.appendChild(el('div', { className: 'studio-aside-item' }, [
+        el('strong', null, '#' + (channel.name || channel.slug)),
+        el('div', null, channel.description || 'Lane description pending.')
+      ]));
+    });
+    laneCard.appendChild(laneList);
+
+    var taskCard = el('div', { className: 'studio-aside-card' }, [
+      el('div', { className: 'studio-card-kicker' }, 'Current execution'),
+      el('div', { className: 'studio-aside-title' }, studioTasks.length > 0 ? String(studioTasks.length) + ' open workspace tasks' : 'No open workspace tasks yet'),
+      el('div', { className: 'studio-aside-copy' }, 'Open tasks across the workspace lanes should mirror the current bottlenecks in research, scripting, production, packaging, growth, and revenue.')
+    ]);
+    var taskList = el('div', { className: 'studio-aside-list' });
+    (studioTasks.length > 0 ? studioTasks : [{ title: 'Create the first workspace tasks', details: 'The starter seeds the office with the first operating tasks.' }]).slice(0, 3).forEach(function(task) {
+      taskList.appendChild(el('div', { className: 'studio-aside-item' }, [
+        el('strong', null, task.title || 'Starter task'),
+        el('div', null, task.details || task.description || 'Task detail pending.')
+      ]));
+    });
+    taskCard.appendChild(taskList);
+
+    right.appendChild(laneCard);
+    right.appendChild(taskCard);
+    heroGrid.appendChild(left);
+    heroGrid.appendChild(right);
+    hero.appendChild(heroGrid);
+    shell.appendChild(hero);
+
+    var statGrid = el('section', { className: 'studio-stat-grid' }, [
+      el('div', { className: 'studio-stat-card' }, [
+        el('div', { className: 'studio-card-kicker' }, 'Active runs'),
+        el('div', { className: 'studio-stat-value' }, String(metrics.queueCount)),
+        el('div', { className: 'studio-stat-copy' }, 'Items currently moving through research, scripting, production, packaging, or publish prep.')
+      ]),
+      el('div', { className: 'studio-stat-card' }, [
+        el('div', { className: 'studio-card-kicker' }, 'Ready to ship'),
+        el('div', { className: 'studio-stat-value' }, String(metrics.readyCount)),
+        el('div', { className: 'studio-stat-copy' }, 'Runs that have cleared production and only need final metadata, links, and approvals.')
+      ]),
+      el('div', { className: 'studio-stat-card' }, [
+        el('div', { className: 'studio-card-kicker' }, 'Open lane tasks'),
+        el('div', { className: 'studio-stat-value' }, String(studioTasks.length)),
+        el('div', { className: 'studio-stat-copy' }, 'Cross-workspace work already created for research, scripts, production, packaging, growth, and revenue.')
+      ]),
+      el('div', { className: 'studio-stat-card' }, [
+        el('div', { className: 'studio-card-kicker' }, 'Modeled monthly op-ex'),
+        el('div', { className: 'studio-stat-value' }, metrics.modeledMonthlyOpEx),
+        el('div', { className: 'studio-stat-copy' }, 'Planning number only. Real vendor spend remains stubbed until adapters and approvals exist.')
+      ])
+    ]);
+    shell.appendChild(statGrid);
+
+    var architecture = el('section', { className: 'studio-section' });
+    architecture.appendChild(el('div', { className: 'studio-section-header' }, [
+      el('div', null, [
+        el('div', { className: 'studio-kicker' }, 'Architecture'),
+        el('h3', { className: 'studio-section-title' }, 'What gets built now vs what stays behind adapters'),
+        el('p', { className: 'studio-section-copy' }, 'The factory should be opinionated about control-plane state, research packets, scripts, and monetization metadata right away. Vendor-specific generation and publishing stay behind stubs until credentials, approvals, and cost controls exist.')
+      ])
+    ]));
+    var architectureGrid = el('div', { className: 'studio-stage-grid' });
+    state.automation.forEach(function(module) {
+      architectureGrid.appendChild(el('div', { className: 'studio-stage-card' }, [
+        el('div', { className: 'studio-stage-top' }, [
+          el('div', { className: 'studio-stage-kicker' }, module.kicker || 'Module'),
+          el('span', { className: studioBadgeClass(module.status) }, studioBadgeLabel(module.status))
+        ]),
+        el('div', { className: 'studio-stage-title' }, module.title),
+        el('div', { className: 'studio-stage-copy' }, module.copy),
+        el('div', { className: 'studio-stage-footer' }, module.footer || '')
+      ]));
+    });
+    architecture.appendChild(architectureGrid);
+    shell.appendChild(architecture);
+
+    var queueSection = el('section', { className: 'studio-section' });
+    queueSection.appendChild(el('div', { className: 'studio-section-header' }, [
+      el('div', null, [
+        el('div', { className: 'studio-kicker' }, 'Pipeline queue'),
+        el('h3', { className: 'studio-section-title' }, 'Runs in flight'),
+        el('p', { className: 'studio-section-copy' }, 'Each approved idea packet should fan out into the stages defined by the active blueprint. The queue below is now persisted in the broker-backed workspace instead of localStorage-only demo state.')
+      ])
+    ]));
+    var queueList = el('div', { className: 'studio-queue-list' });
+    (state.queue || []).forEach(function(run) {
+      var stage = studioStageAt(run.stageIndex || 0);
+      var blueprintArtifacts = studioBlueprintArtifacts();
+      var genericArtifactsForRun = studioArtifactItems(state).filter(function(item) {
+        return item && item.runId === run.id && item.kind !== 'workflow_run';
+      });
+      var artifactReadiness = studioArtifactReadinessForRun(state, run.id);
+      var queueCard = el('div', { className: 'studio-queue-item' }, [
+        el('div', { className: 'studio-queue-top' }, [
+          el('span', { className: 'studio-queue-status ' + (run.state || 'active') }, stageNameForRun(run)),
+          el('span', { className: 'badge badge-accent' }, 'Score ' + String(run.score || 0))
+        ]),
+        el('div', { className: 'studio-queue-title' }, run.title),
+        el('div', { className: 'studio-queue-copy' }, stage.copy),
+        el('div', { className: 'studio-inline-stats' }, [
+          el('div', { className: 'studio-inline-stat' }, [el('strong', null, 'Format'), el('span', null, run.format || 'Mixed')]),
+          el('div', { className: 'studio-inline-stat' }, [el('strong', null, 'Monetization'), el('span', null, run.monetization || 'TBD')]),
+          el('div', { className: 'studio-inline-stat' }, [el('strong', null, 'Unit cost'), el('span', null, '$' + String(run.unitCost || 0))]),
+          el('div', { className: 'studio-inline-stat' }, [el('strong', null, 'ETA'), el('span', null, run.eta || 'Backlog')])
+        ]),
+        el('div', { className: 'studio-inline-stats' }, artifactReadiness.map(function(item) {
+          return el('div', { className: 'studio-inline-stat' }, [el('strong', null, item.label), el('span', null, item.ready ? 'Ready' : 'Missing')]);
+        }))
+      ]);
+      if (genericArtifactsForRun.length > 0) {
+        queueCard.appendChild(el('div', { className: 'studio-queue-copy' }, genericArtifactsForRun.slice(0, 2).map(function(item) {
+          var def = blueprintArtifacts.find(function(artifactDef) {
+            return artifactDef.id === item.kind;
+          });
+          var text = item.summary || (((item.data || {}).title_options || []).slice(0, 2).join(' | ')) || (item.data || {}).description || '';
+          return (def ? def.name : item.kind).concat(text ? ': ' + text : '');
+        }).join(' • ')));
+      }
+      if (run.state !== 'published') {
+        queueCard.appendChild(el('div', { className: 'studio-queue-actions' }, [
+          el('button', { className: 'btn btn-sm btn-secondary', onClick: function() {
+            generateStudioPackageForRun(run);
+          } }, genericArtifactsForRun.length > 0 ? 'Regenerate Package' : 'Generate Package'),
+          el('button', { className: 'btn btn-sm btn-primary', onClick: function() {
+            advanceStudioRun(run.id).then(function() {
+              showNotice('Advanced "' + run.title + '".', 'success');
+            }).catch(function(err) {
+              showNotice('Could not advance run: ' + (err && err.message ? err.message : err), 'error');
+            });
+          } }, run.state === 'ready' ? 'Publish Mark' : 'Advance Stage')
+        ]));
+      }
+      queueList.appendChild(queueCard);
+    });
+    queueSection.appendChild(queueList);
+    shell.appendChild(queueSection);
+
+    var packageSection = el('section', { className: 'studio-section' });
+    packageSection.appendChild(el('div', { className: 'studio-section-header' }, [
+      el('div', null, [
+        el('div', { className: 'studio-kicker' }, 'Codex outputs'),
+        el('h3', { className: 'studio-section-title' }, 'Latest generated artifacts'),
+        el('p', { className: 'studio-section-copy' }, 'This is the first real automation slice: one run goes through Codex and comes back as durable artifacts the team can review, reuse, or route into the next workflow.')
+      ])
+    ]));
+    var packageGrid = el('div', { className: 'studio-econ-grid' });
+    var latestArtifacts = studioRecentGeneratedArtifacts(state, 3);
+    if (latestArtifacts.length === 0) {
+      packageGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+        el('div', { className: 'studio-econ-top' }, [
+          el('div', { className: 'studio-econ-label' }, 'No packages yet'),
+          el('span', { className: 'badge badge-yellow' }, 'Generate one')
+        ]),
+        el('div', { className: 'studio-ladder-title' }, 'Run the first queue item through Codex'),
+        el('div', { className: 'studio-econ-copy' }, 'Use "Generate Package" on any run to create durable artifacts for the next stage of the workflow.')
+      ]));
+    } else {
+      latestArtifacts.forEach(function(item) {
+        var data = item.data || {};
+        var artifactDef = studioBlueprintArtifacts().find(function(def) {
+          return def.id === item.kind;
+        });
+        packageGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+          el('div', { className: 'studio-econ-top' }, [
+            el('div', { className: 'studio-econ-label' }, new Date(item.generatedAt || Date.now()).toLocaleString()),
+            el('span', { className: 'badge badge-accent' }, (artifactDef ? artifactDef.name : String(item.kind || 'artifact').replace(/_/g, ' ')))
+          ]),
+          el('div', { className: 'studio-ladder-title' }, item.title || 'Untitled run'),
+          el('div', { className: 'studio-econ-copy' }, ((data.title_options || []).slice(0, 2).join(' | ')) || data.description || 'Publish package generated.'),
+          el('div', { className: 'studio-econ-detail' }, data.pinned_comment || '')
+        ]));
+      });
+    }
+    packageSection.appendChild(packageGrid);
+    shell.appendChild(packageSection);
+
+    var workflowSection = el('section', { className: 'studio-section' });
+    var workflowActions = [];
+    if (missingWorkflowSkills.length > 0) {
+      workflowActions.push(el('button', { className: 'btn btn-secondary btn-sm', onClick: function() {
+        installAllStudioWorkflowSkills(currentChannel || 'general').then(function() {
+          rerenderStudioIfOpen();
+          showNotice('Installed the Studio workflow skills.', 'success');
+        }).catch(function(err) {
+          showNotice('Could not install workflow skills: ' + (err && err.message ? err.message : err), 'error');
+        });
+      } }, 'Install ' + String(missingWorkflowSkills.length) + ' Workflow Skills'));
+    }
+    workflowActions.push(el('button', { className: 'btn btn-ghost btn-sm', onClick: function() {
+      navigate('#/apps/skills');
+    } }, 'Open Skills'));
+    workflowSection.appendChild(el('div', { className: 'studio-section-header' }, [
+      el('div', null, [
+        el('div', { className: 'studio-kicker' }, 'Integration harness'),
+        el('h3', { className: 'studio-section-title' }, 'Recommended workflow skills and smoke tests'),
+        el('p', { className: 'studio-section-copy' }, 'These workflow drafts are the concrete integration seam. Install them as reusable skills, then run dry-run or mock executions so the office can prove the integrations before any real credentials are approved.')
+      ]),
+      el('div', { className: 'studio-actions' }, workflowActions)
+    ]));
+    var workflowGrid = el('div', { className: 'studio-econ-grid' });
+    drafts.forEach(function(draft) {
+      var installedSkill = studioSkillForDraft(skills, draft);
+      var latestRun = latestStudioWorkflowRun(state, ((draft.definition || {}).key) || draft.skillName);
+      var topRightBadge = installedSkill ? el('span', { className: 'badge badge-green' }, 'Skill active') : el('span', { className: 'badge badge-yellow' }, 'Draft only');
+      var runBadge = latestRun ? el('span', { className: 'policy-status-pill ' + (latestRun.status === 'success' ? 'policy-status-active' : 'policy-status-fired') }, String(latestRun.status || 'unknown').toUpperCase()) : el('span', { className: 'policy-status-pill policy-status-pending' }, 'NOT RUN');
+      workflowGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+        el('div', { className: 'studio-econ-top' }, [
+          el('div', { className: 'studio-econ-label' }, (draft.ownedIntegrations || []).join(', ') || 'workflow'),
+          topRightBadge
+        ]),
+        el('div', { className: 'studio-ladder-title' }, draft.title),
+        el('div', { className: 'studio-econ-copy' }, draft.description),
+        el('div', { className: 'studio-econ-detail' }, 'Trigger: ' + (draft.trigger || 'manual')),
+        el('div', { className: 'studio-econ-detail' }, 'Integrations: ' + ((draft.ownedIntegrations || []).join(', ') || 'none')),
+        el('div', { className: 'studio-econ-detail' }, latestRun
+          ? ('Last run ' + runBadge.textContent + ' at ' + new Date(latestRun.generatedAt || Date.now()).toLocaleString())
+          : 'No smoke run recorded yet.'),
+        el('div', { className: 'studio-queue-actions' }, [
+          installedSkill
+            ? el('button', { className: 'btn btn-sm btn-secondary', onClick: function() {
+                navigate('#/apps/skills');
+              } }, 'View Skill')
+            : el('button', { className: 'btn btn-sm btn-secondary', onClick: function() {
+                installStudioWorkflowSkill(draft, 'you', currentChannel || 'general').then(function() {
+                  rerenderStudioIfOpen();
+                  showNotice('Installed "' + draft.title + '" as a skill.', 'success');
+                }).catch(function(err) {
+                  showNotice('Could not install skill: ' + (err && err.message ? err.message : err), 'error');
+                });
+              } }, 'Install Skill'),
+          el('button', { className: 'btn btn-sm btn-primary', onClick: function() {
+            runStudioWorkflowDraft(draft);
+          } }, 'Run Smoke Test')
+        ]),
+        el('div', { style: { marginTop: '8px' } }, runBadge)
+      ]));
+    });
+    workflowSection.appendChild(workflowGrid);
+    shell.appendChild(workflowSection);
+
+    var evidenceSection = el('section', { className: 'studio-section' });
+    evidenceSection.appendChild(el('div', { className: 'studio-section-header' }, [
+      el('div', null, [
+        el('div', { className: 'studio-kicker' }, 'Workflow evidence'),
+        el('h3', { className: 'studio-section-title' }, 'Persisted dry-run and mock execution history'),
+        el('p', { className: 'studio-section-copy' }, 'Successful smoke tests now persist in the broker-backed Studio state so the office can inspect what was exercised, which integrations were touched, and what the last status was.')
+      ])
+    ]));
+    var evidenceGrid = el('div', { className: 'studio-econ-grid' });
+    if (workflowRuns.length === 0) {
+      evidenceGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+        el('div', { className: 'studio-econ-top' }, [
+          el('div', { className: 'studio-econ-label' }, 'No smoke evidence yet'),
+          el('span', { className: 'badge badge-yellow' }, 'Run one')
+        ]),
+        el('div', { className: 'studio-ladder-title' }, 'Execute one of the workflow drafts'),
+        el('div', { className: 'studio-econ-copy' }, 'The Studio app will record the mode, integrations, status, run id, and step payload summary here after each dry-run or mock execution.')
+      ]));
+    } else {
+      workflowRuns.slice().sort(function(a, b) {
+        return new Date(b.generatedAt || 0).getTime() - new Date(a.generatedAt || 0).getTime();
+      }).slice(0, 4).forEach(function(run) {
+        evidenceGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+          el('div', { className: 'studio-econ-top' }, [
+            el('div', { className: 'studio-econ-label' }, run.mode || 'workflow'),
+            el('span', { className: run.status === 'success' ? 'badge badge-green' : 'badge badge-yellow' }, run.status || 'completed')
+          ]),
+          el('div', { className: 'studio-ladder-title' }, run.title || run.workflowKey || 'Workflow run'),
+          el('div', { className: 'studio-econ-copy' }, run.summary || 'Studio workflow execution recorded.'),
+          el('div', { className: 'studio-econ-detail' }, 'Integrations: ' + ((run.integrations || []).join(', ') || 'none')),
+          el('div', { className: 'studio-econ-detail' }, 'Run ID: ' + (run.runId || 'n/a')),
+          el('div', { className: 'studio-econ-detail' }, new Date(run.generatedAt || Date.now()).toLocaleString())
+        ]));
+      });
+    }
+    evidenceSection.appendChild(evidenceGrid);
+    shell.appendChild(evidenceSection);
+
+    var monetization = el('section', { className: 'studio-section' });
+    monetization.appendChild(el('div', { className: 'studio-section-header' }, [
+      el('div', null, [
+        el('div', { className: 'studio-kicker' }, 'Monetization ladder'),
+        el('h3', { className: 'studio-section-title' }, 'Revenue should be wired before scale arrives'),
+        el('p', { className: 'studio-section-copy' }, 'Affiliates, owned-audience capture, services, and offers are day-zero defaults. Ads and sponsors become multiplicative once the operation starts producing repeat winners.')
+      ])
+    ]));
+    var econGrid = el('div', { className: 'studio-econ-grid' });
+    studioMonetizationLadder().forEach(function(item) {
+      econGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+        el('div', { className: 'studio-econ-top' }, [
+          el('div', { className: 'studio-econ-label' }, item.kicker),
+          el('span', { className: 'badge badge-accent' }, 'Revenue')
+        ]),
+        el('div', { className: 'studio-ladder-title' }, item.title),
+        el('div', { className: 'studio-econ-copy' }, item.copy),
+        el('div', { className: 'studio-econ-detail' }, item.footer)
+      ]));
+    });
+    monetization.appendChild(econGrid);
+    shell.appendChild(monetization);
+
+    var bootstrapSection = el('section', { className: 'studio-section' });
+    bootstrapSection.appendChild(el('div', { className: 'studio-section-header' }, [
+      el('div', null, [
+        el('div', { className: 'studio-kicker' }, 'Packaged operation'),
+        el('h3', { className: 'studio-section-title' }, 'Bootstrap defaults wired into first run'),
+        el('p', { className: 'studio-section-copy' }, 'The first-run Studio state now starts from the packaged blueprint config, so the dashboard carries the real niche, channels, lead magnet path, monetization slots, and KPI tracking instead of a generic demo profile.')
+      ])
+    ]));
+    var bootstrapGrid = el('div', { className: 'studio-econ-grid' });
+    bootstrapGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+      el('div', { className: 'studio-econ-top' }, [
+        el('div', { className: 'studio-econ-label' }, 'Content series'),
+        el('span', { className: 'badge badge-accent' }, String((state.contentSeries || []).length) + ' seeded')
+      ]),
+      el('div', { className: 'studio-ladder-title' }, (state.contentSeries || []).join(' | ') || 'No content series configured'),
+      el('div', { className: 'studio-econ-copy' }, 'These are the repeatable shows the business launches with, not ad hoc formats invented in the UI.')
+    ]));
+    bootstrapGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+      el('div', { className: 'studio-econ-top' }, [
+        el('div', { className: 'studio-econ-label' }, 'Lead magnet'),
+        el('span', { className: 'badge badge-accent' }, 'Owned audience')
+      ]),
+      el('div', { className: 'studio-ladder-title' }, (state.leadMagnet && state.leadMagnet.name) || 'No lead magnet configured'),
+      el('div', { className: 'studio-econ-copy' }, (state.leadMagnet && state.leadMagnet.cta) || 'Missing CTA'),
+      el('div', { className: 'studio-econ-detail' }, (state.leadMagnet && state.leadMagnet.path) || '')
+    ]));
+    bootstrapGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+      el('div', { className: 'studio-econ-top' }, [
+        el('div', { className: 'studio-econ-label' }, 'Monetization slots'),
+        el('span', { className: 'badge badge-accent' }, String((state.monetizationAssets || []).length) + ' mapped')
+      ]),
+      el('div', { className: 'studio-ladder-title' }, (state.monetizationAssets || []).map(function(item) { return item.name; }).join(' | ') || 'No monetization assets configured'),
+      el('div', { className: 'studio-econ-copy' }, (state.monetizationAssets || []).map(function(item) { return item.slot + ': ' + item.cta; }).join(' / '))
+    ]));
+    bootstrapGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+      el('div', { className: 'studio-econ-top' }, [
+        el('div', { className: 'studio-econ-label' }, 'KPI tracking'),
+        el('span', { className: 'badge badge-accent' }, String((state.kpis || []).length) + ' tracked')
+      ]),
+      el('div', { className: 'studio-ladder-title' }, (state.kpis || []).map(function(item) { return item.name; }).join(' | ') || 'No KPI tracking configured'),
+      el('div', { className: 'studio-econ-copy' }, (state.kpis || []).map(function(item) { return item.target; }).join(' / '))
+    ]));
+    bootstrapSection.appendChild(bootstrapGrid);
+    shell.appendChild(bootstrapSection);
+
+    var stubs = el('section', { className: 'studio-section' });
+    stubs.appendChild(el('div', { className: 'studio-section-header' }, [
+      el('div', null, [
+        el('div', { className: 'studio-kicker' }, 'Adapter backlog'),
+        el('h3', { className: 'studio-section-title' }, 'External systems still intentionally stubbed'),
+        el('p', { className: 'studio-section-copy' }, 'The business logic should exist before vendor lock-in. These integration lanes now show which ones have a passing smoke harness and which are still waiting on human-approved credentials.')
+      ])
+    ]));
+    var stubGrid = el('div', { className: 'studio-econ-grid' });
+    getBootstrapConnections(state).forEach(function(item) {
+      var statusBadge = item.state === 'smoke_tested' ? 'badge badge-green' : 'badge badge-yellow';
+      var statusLabel = item.state === 'smoke_tested' ? 'Smoke tested' : 'Blocked on integration';
+      stubGrid.appendChild(el('div', { className: 'studio-econ-card' }, [
+        el('div', { className: 'studio-econ-top' }, [
+          el('div', { className: 'studio-econ-label' }, item.integration || item.status || 'stub'),
+          el('span', { className: statusBadge }, statusLabel)
+        ]),
+        el('div', { className: 'studio-ladder-title' }, item.name),
+        el('div', { className: 'studio-econ-copy' }, item.purpose || item.detail),
+        el('div', { className: 'studio-econ-detail' }, item.smokeTest || item.detail || ''),
+        el('div', { className: 'studio-econ-detail' }, item.lastRunAt
+          ? ('Last smoke run: ' + new Date(item.lastRunAt).toLocaleString() + (item.lastMode ? ' (' + item.lastMode + ')' : ''))
+          : (item.blocker || 'Waiting on credentials and approvals.'))
+      ]));
+    });
+    stubs.appendChild(stubGrid);
+    stubs.appendChild(el('div', { className: 'studio-footnote' }, 'Last updated ' + new Date(state.lastUpdated).toLocaleString() + '. Topic packets, script briefs, publish payloads, and workflow smoke evidence now persist in Studio state; real external side effects still stay behind human approval.'));
+    shell.appendChild(stubs);
+
+    panel.appendChild(shell);
+  }).catch(function(err) {
+    panel.textContent = '';
+    panel.appendChild(el('div', { className: 'request-empty' }, 'Could not load Studio: ' + (err && err.message ? err.message : err)));
+  });
+}
+
 function renderAppContent(appId) {
   // Map new IDs to panel elements (activity uses app-artifacts panel)
   var panelId = appId;
@@ -3459,7 +5904,8 @@ function renderAppContent(appId) {
   var panel = document.getElementById('app-' + panelId);
   if (!panel) return;
   panel.textContent = '';
-  if (appId === 'tasks') renderTasksApp(panel);
+  if (appId === 'studio') renderStudioApp(panel);
+  else if (appId === 'tasks') renderTasksApp(panel);
   else if (appId === 'requests') renderRequestsApp(panel);
   else if (appId === 'policies') renderPoliciesApp(panel);
   else if (appId === 'calendar') renderCalendarApp(panel);
@@ -3474,7 +5920,7 @@ function renderTasksApp(panel) {
   panel.style.overflow = 'hidden';
   var loading = el('div', { style: { padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '14px' } }, 'Loading tasks...');
   panel.appendChild(loading);
-  WuphfAPI.getTasks(currentChannel)
+  WuphfAPI.getOfficeTasks({ includeDone: true })
     .then(function(data) {
       panel.textContent = '';
       var tasks = data.tasks || [];
@@ -3483,11 +5929,21 @@ function renderTasksApp(panel) {
         panel.appendChild(el('div', { className: 'request-empty' }, 'No tasks yet.'));
         return;
       }
+      var header = el('div', { style: { padding: '16px 20px 0', borderBottom: '1px solid var(--border)' } }, [
+        el('h3', { style: { fontSize: '16px', fontWeight: '600' } }, 'Office tasks'),
+        el('div', { style: { fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px', marginBottom: '12px' } }, 'All active lanes across the office, not just #' + currentChannel + '.')
+      ]);
+      panel.appendChild(header);
       renderTaskBoard(panel, tasks);
     })
     .catch(function() {
       panel.textContent = '';
       if (cachedTasks.length > 0) {
+        var header = el('div', { style: { padding: '16px 20px 0', borderBottom: '1px solid var(--border)' } }, [
+          el('h3', { style: { fontSize: '16px', fontWeight: '600' } }, 'Office tasks'),
+          el('div', { style: { fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px', marginBottom: '12px' } }, 'Showing cached office state while the broker reconnects.')
+        ]);
+        panel.appendChild(header);
         renderTaskBoard(panel, cachedTasks);
       } else {
         panel.appendChild(el('div', { className: 'request-empty' }, 'Could not load tasks.'));
@@ -3741,16 +6197,30 @@ function renderSkillsList(panel, skills) {
       card.appendChild(el('div', { className: 'skill-card-desc' }, skill.description));
     }
 
+    var detailLines = [];
+    if (skill.workflow_provider || skill.workflow_key || skill.workflowKey) {
+      detailLines.push('Workflow: ' + String(skill.workflow_provider || '').toUpperCase() + ' / ' + String(skill.workflow_key || skill.workflowKey || ''));
+    }
+    if (Array.isArray(skill.tags) && skill.tags.length > 0) {
+      detailLines.push('Tags: ' + skill.tags.join(', '));
+    }
+    if (detailLines.length > 0) {
+      card.appendChild(el('div', { className: 'studio-econ-detail', style: { marginBottom: '8px' } }, detailLines.join(' | ')));
+    }
+
     var meta = el('div', { className: 'skill-card-meta' });
     if (skill.usage_count != null) {
       meta.appendChild(el('span', { className: 'skill-card-stat' }, '\uD83D\uDD04 ' + skill.usage_count + ' uses'));
     }
-    if (skill.last_status) {
-      var statusClass = skill.last_status === 'success' ? 'policy-status-active' : (skill.last_status === 'failed' ? 'policy-status-fired' : 'policy-status-pending');
-      meta.appendChild(el('span', { className: 'policy-status-pill ' + statusClass }, skill.last_status.toUpperCase()));
+    var executionStatus = skill.last_execution_status || skill.last_status;
+    if (executionStatus) {
+      var statusClass = executionStatus === 'success' || executionStatus === 'completed'
+        ? 'policy-status-active'
+        : (executionStatus === 'failed' ? 'policy-status-fired' : 'policy-status-pending');
+      meta.appendChild(el('span', { className: 'policy-status-pill ' + statusClass }, String(executionStatus).toUpperCase()));
     }
-    if (skill.last_run || skill.last_execution) {
-      var ts = skill.last_run || skill.last_execution;
+    if (skill.last_execution_at || skill.last_run || skill.last_execution) {
+      var ts = skill.last_execution_at || skill.last_run || skill.last_execution;
       meta.appendChild(el('span', null, new Date(ts).toLocaleString()));
     }
     card.appendChild(meta);
@@ -3786,68 +6256,297 @@ function renderSkillsList(panel, skills) {
     panel.appendChild(card);
   });
 }
+function buildActivityStat(kicker, value, copy) {
+  return el('div', { className: 'activity-stat-card' }, [
+    el('div', { className: 'activity-stat-kicker' }, kicker),
+    el('div', { className: 'activity-stat-value' }, value),
+    el('div', { className: 'activity-stat-copy' }, copy)
+  ]);
+}
+
+function buildActivitySection(title, meta) {
+  var section = el('section', { className: 'activity-section' });
+  var header = el('div', { className: 'activity-section-header' }, [
+    el('div', { className: 'activity-section-title' }, title),
+    el('div', { className: 'activity-section-meta' }, meta || '')
+  ]);
+  section.appendChild(header);
+  return section;
+}
+
+function buildActivityItem(title, body, metaParts, opts) {
+  opts = opts || {};
+  var item = el('div', { className: 'activity-item' });
+  var header = el('div', { className: 'activity-item-header' });
+  if (opts.kindLabel) {
+    header.appendChild(el('span', { className: 'activity-kind-pill' + (opts.kindClass ? ' ' + opts.kindClass : '') }, opts.kindLabel));
+  }
+  header.appendChild(el('div', { className: 'activity-item-title' }, title));
+  item.appendChild(header);
+  if (body) item.appendChild(el('div', { className: 'activity-item-body' }, body));
+  if (metaParts && metaParts.length > 0) {
+    var meta = el('div', { className: 'activity-item-meta' });
+    metaParts.forEach(function(part) {
+      if (part) meta.appendChild(el('span', null, part));
+    });
+    item.appendChild(meta);
+  }
+  if (opts.onClick) item.addEventListener('click', opts.onClick);
+  return item;
+}
+
+function summarizeActionKind(kind) {
+  kind = String(kind || 'action').toLowerCase();
+  if (/approv|request/.test(kind)) return { label: 'approval', cls: 'warning' };
+  if (/deploy|incident|error|fail/.test(kind)) return { label: kind, cls: 'danger' };
+  if (/automation|workflow|sync|integration/.test(kind)) return { label: kind, cls: 'good' };
+  return { label: kind, cls: '' };
+}
+
 // --- Artifacts view (#58, #104) ---
 function renderArtifactsApp(panel) {
   if (!brokerConnected) {
-    panel.appendChild(el('div', { className: 'request-empty' }, 'Connect to broker to see artifacts.'));
+    panel.appendChild(el('div', { className: 'request-empty' }, 'Connect to broker to see office activity.'));
     return;
   }
   panel.style.overflow = 'auto';
-  var loading = el('div', { style: { padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '14px' } }, 'Loading artifacts...');
+  var loading = el('div', { style: { padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '14px' } }, 'Loading office activity...');
   panel.appendChild(loading);
-  WuphfAPI.getActions()
-    .then(function(data) {
-      panel.textContent = '';
-      var actions = data.actions || data || [];
-      if (!Array.isArray(actions)) actions = [];
-      if (actions.length === 0) {
-        panel.appendChild(el('div', { className: 'request-empty' }, 'No artifacts yet.'));
-        return;
-      }
-      var header = el('div', { style: { padding: '0 20px 12px', borderBottom: '1px solid var(--border)' } });
-      header.appendChild(el('h3', { style: { fontSize: '16px', fontWeight: '600' } }, 'Activity'));
-      header.appendChild(el('div', { style: { fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px' } }, actions.length + ' actions recorded'));
-      panel.appendChild(header);
-      var timeline = el('div', { className: 'artifact-timeline' });
-      actions.sort(function(a, b) {
-        var ta = a.timestamp || a.created_at || '';
-        var tb = b.timestamp || b.created_at || '';
-        return tb.localeCompare(ta);
-      });
-      actions.forEach(function(action) {
-        var kind = (action.kind || action.type || 'tool').toLowerCase();
-        var dotClass = 'artifact-dot';
-        var typeClass = 'artifact-type';
-        if (kind.indexOf('commit') >= 0 || kind.indexOf('push') >= 0) { dotClass += ' artifact-dot-commit'; typeClass += ' artifact-type-commit'; }
-        else if (kind.indexOf('deploy') >= 0) { dotClass += ' artifact-dot-deploy'; typeClass += ' artifact-type-deploy'; }
-        else if (kind.indexOf('approv') >= 0) { dotClass += ' artifact-dot-approval'; typeClass += ' artifact-type-approval'; }
-        else { dotClass += ' artifact-dot-tool'; typeClass += ' artifact-type-tool'; }
 
-        var item = el('div', { className: 'artifact-item' });
-        item.appendChild(el('div', { className: dotClass }));
-        var body = el('div', { className: 'artifact-body' });
-        var hdr = el('div', { className: 'artifact-header' });
-        hdr.appendChild(el('span', { className: typeClass }, kind));
-        if (action.owner || action.agent) {
-          hdr.appendChild(el('span', { className: 'artifact-agent' }, action.owner || action.agent));
-        }
-        body.appendChild(hdr);
-        if (action.summary || action.name || action.title || action.description) {
-          body.appendChild(el('div', { className: 'artifact-summary' }, action.summary || action.name || action.title || action.description));
-        }
-        var ts = action.timestamp || action.created_at || action.updated_at;
-        if (ts) {
-          body.appendChild(el('div', { className: 'artifact-time' }, new Date(ts).toLocaleString()));
-        }
-        item.appendChild(body);
-        timeline.appendChild(item);
-      });
-      panel.appendChild(timeline);
-    })
-    .catch(function() {
-      panel.textContent = '';
-      panel.appendChild(el('div', { className: 'request-empty' }, 'Could not load artifacts.'));
+  Promise.all([
+    WuphfAPI.getOfficeTasks({ includeDone: true }).catch(function() { return { tasks: [] }; }),
+    WuphfAPI.getActions().catch(function() { return { actions: [] }; }),
+    WuphfAPI.getDecisions().catch(function() { return { decisions: [] }; }),
+    WuphfAPI.getWatchdogs().catch(function() { return { watchdogs: [] }; }),
+    WuphfAPI.getScheduler({ dueOnly: true }).catch(function() { return { jobs: [] }; }),
+    WuphfAPI.getUsage().catch(function() { return null; }),
+    WuphfAPI.getOfficeMembers().catch(function() { return { members: [] }; })
+  ]).then(function(results) {
+    panel.textContent = '';
+
+    var tasks = (results[0].tasks || []).slice();
+    var actions = (results[1].actions || []).slice();
+    var decisions = (results[2].decisions || []).slice();
+    var watchdogs = (results[3].watchdogs || []).slice();
+    var jobs = (results[4].jobs || []).slice();
+    var usage = results[5] || cachedUsage || { total: {}, agents: {} };
+    var members = normalizeMemberActivityHints(results[6].members || cachedMembers || []);
+
+    if (tasks.length > 0) cachedTasks = tasks;
+    if (usage) cachedUsage = usage;
+    if (members.length > 0) cachedMembers = members;
+
+    tasks.sort(function(a, b) { return liveWorkStatusRank(a) - liveWorkStatusRank(b); });
+    actions.sort(function(a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+    decisions.sort(function(a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+    watchdogs.sort(function(a, b) { return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')); });
+    jobs.sort(function(a, b) { return String(a.next_run || a.due_at || '').localeCompare(String(b.next_run || b.due_at || '')); });
+
+    var activeTasks = tasks.filter(function(t) {
+      var status = normalizeTaskStatus(t.status);
+      return status === 'in_progress' || status === 'review' || status === 'open';
     });
+    var blockedTasks = tasks.filter(function(t) { return normalizeTaskStatus(t.status) === 'blocked'; });
+    var doneTasks = tasks.filter(function(t) {
+      var status = normalizeTaskStatus(t.status);
+      return status === 'done' || status === 'completed';
+    });
+    var liveAgents = members.filter(function(member) {
+      return member.slug !== 'human' && member.slug !== 'you' && classifyActivity(member).state !== 'lurking';
+    });
+
+    var shell = el('div', { className: 'activity-shell' });
+    shell.appendChild(el('div', { className: 'activity-hero' }, [
+      el('div', null, [
+        el('div', { className: 'activity-hero-title' }, 'Office activity'),
+        el('div', { className: 'activity-hero-copy' }, 'See what the office is actually doing: which lanes are moving, which agents are active, what decisions just got made, and where real work is blocked.')
+      ]),
+      el('div', { className: 'activity-section-meta' }, new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))
+    ]));
+
+    shell.appendChild(el('div', { className: 'activity-stat-grid' }, [
+      buildActivityStat('Active lanes', String(activeTasks.length), 'Live tasks currently moving across all channels.'),
+      buildActivityStat('Blocked', String(blockedTasks.length + watchdogs.length), 'Lanes and watchdogs that need intervention.'),
+      buildActivityStat('Agents in motion', String(liveAgents.length), 'Specialists currently shipping, plotting, or talking.'),
+      buildActivityStat('Recent actions', String(actions.length), 'Automation, handoffs, and system actions the office has logged.'),
+      buildActivityStat('Due automations', String(jobs.length), 'Scheduled jobs that are due right now.'),
+      buildActivityStat('Session tokens', formatTokens((usage.session && usage.session.total_tokens) || 0), 'Live token burn for the current office session.')
+    ]));
+
+    var grid = el('div', { className: 'activity-grid' });
+    var left = el('div', { className: 'activity-column' });
+    var right = el('div', { className: 'activity-column' });
+
+    var laneSection = buildActivitySection('Active lanes', activeTasks.length + ' open or moving');
+    if (activeTasks.length === 0) {
+      laneSection.appendChild(el('div', { className: 'activity-empty' }, 'No active lanes right now.'));
+    } else {
+      var laneList = el('div', { className: 'activity-list' });
+      activeTasks.slice(0, 10).forEach(function(task) {
+        var meta = [];
+        if (task.channel) meta.push('#' + task.channel);
+        if (task.owner) meta.push('@' + task.owner);
+        if (task.execution_mode) meta.push(task.execution_mode.replace(/_/g, ' '));
+        if (task.worktree_branch) meta.push(task.worktree_branch);
+        laneList.appendChild(buildActivityItem(
+          task.title || task.name || task.id || 'Untitled task',
+          task.details || task.description || 'Task details pending.',
+          meta,
+          {
+            kindLabel: normalizeTaskStatus(task.status).replace(/_/g, ' '),
+            kindClass: normalizeTaskStatus(task.status) === 'blocked' ? 'danger' : (normalizeTaskStatus(task.status) === 'review' ? 'warning' : 'good'),
+            onClick: function() { openTaskDetail(task); }
+          }
+        ));
+      });
+      laneSection.appendChild(laneList);
+    }
+    left.appendChild(laneSection);
+
+    var agentSection = buildActivitySection('Agent pulse', liveAgents.length + ' active right now');
+    if (liveAgents.length === 0) {
+      agentSection.appendChild(el('div', { className: 'activity-empty' }, 'No agents are visibly moving right now.'));
+    } else {
+      var agentWrap = el('div', { className: 'live-work-cards', style: { flexWrap: 'wrap', overflow: 'visible' } });
+      liveAgents.slice(0, 10).forEach(function(member) {
+        var activity = classifyActivity(member);
+        var task = findAgentTask(member.slug);
+        var chip = el('div', { className: 'activity-agent-chip' });
+        chip.appendChild(el('span', { className: 'agent-grid-card-dot ' + activity.dotClass }, ''));
+        chip.appendChild(el('div', { className: 'activity-agent-meta' }, [
+          el('div', { className: 'activity-agent-name' }, member.name || member.slug),
+          el('div', { className: 'activity-agent-stream' }, agentLatestText[member.slug] || (task && (task.title || task.name)) || member.activity || activity.label)
+        ]));
+        if (task && task.channel) chip.appendChild(el('span', { className: 'live-work-card-channel' }, '#' + task.channel));
+        agentWrap.appendChild(chip);
+      });
+      agentSection.appendChild(agentWrap);
+    }
+    left.appendChild(agentSection);
+
+    var actionSection = buildActivitySection('Recent actions', actions.length + ' recorded');
+    if (actions.length === 0) {
+      actionSection.appendChild(el('div', { className: 'activity-empty' }, 'No actions recorded yet.'));
+    } else {
+      var actionList = el('div', { className: 'activity-list' });
+      actions.slice(0, 12).forEach(function(action) {
+        var kind = summarizeActionKind(action.kind || action.type);
+        var meta = [];
+        if (action.channel) meta.push('#' + action.channel);
+        if (action.actor) meta.push('@' + action.actor);
+        if (action.source) meta.push(action.source);
+        if (action.created_at) meta.push(new Date(action.created_at).toLocaleString());
+        actionList.appendChild(buildActivityItem(
+          action.summary || action.name || action.title || 'Action',
+          action.related_id ? 'Related: ' + action.related_id : '',
+          meta,
+          { kindLabel: kind.label, kindClass: kind.cls }
+        ));
+      });
+      actionSection.appendChild(actionList);
+    }
+    left.appendChild(actionSection);
+
+    var attentionSection = buildActivitySection('Needs attention', (blockedTasks.length + watchdogs.length) + ' items');
+    if (blockedTasks.length === 0 && watchdogs.length === 0) {
+      attentionSection.appendChild(el('div', { className: 'activity-empty' }, 'No active blockers or watchdog alerts.'));
+    } else {
+      var attentionList = el('div', { className: 'activity-list' });
+      blockedTasks.slice(0, 6).forEach(function(task) {
+        var meta = [];
+        if (task.channel) meta.push('#' + task.channel);
+        if (task.owner) meta.push('@' + task.owner);
+        attentionList.appendChild(buildActivityItem(
+          task.title || task.name || task.id || 'Blocked task',
+          task.details || task.description || 'Blocked lane needs operator attention.',
+          meta,
+          {
+            kindLabel: 'blocked',
+            kindClass: 'danger',
+            onClick: function() { openTaskDetail(task); }
+          }
+        ));
+      });
+      watchdogs.slice(0, 6).forEach(function(alert) {
+        var meta = [];
+        if (alert.channel) meta.push('#' + alert.channel);
+        if (alert.owner) meta.push('@' + alert.owner);
+        if (alert.updated_at || alert.created_at) meta.push(new Date(alert.updated_at || alert.created_at).toLocaleString());
+        attentionList.appendChild(buildActivityItem(
+          alert.summary || alert.kind || 'Watchdog alert',
+          alert.target_type ? (alert.target_type + (alert.target_id ? ' · ' + alert.target_id : '')) : '',
+          meta,
+          { kindLabel: alert.kind || 'watchdog', kindClass: 'danger' }
+        ));
+      });
+      attentionSection.appendChild(attentionList);
+    }
+    right.appendChild(attentionSection);
+
+    var decisionSection = buildActivitySection('Recent decisions', decisions.length + ' recorded');
+    if (decisions.length === 0) {
+      decisionSection.appendChild(el('div', { className: 'activity-empty' }, 'No decisions recorded yet.'));
+    } else {
+      var decisionList = el('div', { className: 'activity-list' });
+      decisions.slice(0, 8).forEach(function(decision) {
+        var meta = [];
+        if (decision.channel) meta.push('#' + decision.channel);
+        if (decision.owner) meta.push('@' + decision.owner);
+        if (decision.created_at) meta.push(new Date(decision.created_at).toLocaleString());
+        if (decision.requires_human) meta.push('human required');
+        decisionList.appendChild(buildActivityItem(
+          decision.summary || decision.kind || 'Decision',
+          decision.reason || '',
+          meta,
+          {
+            kindLabel: decision.kind || 'decision',
+            kindClass: decision.blocking ? 'warning' : ''
+          }
+        ));
+      });
+      decisionSection.appendChild(decisionList);
+    }
+    right.appendChild(decisionSection);
+
+    var schedulerSection = buildActivitySection('Due automations', jobs.length + ' due now');
+    if (jobs.length === 0) {
+      schedulerSection.appendChild(el('div', { className: 'activity-empty' }, 'No jobs are due right now.'));
+    } else {
+      var jobList = el('div', { className: 'activity-list' });
+      jobs.slice(0, 6).forEach(function(job) {
+        var meta = [];
+        if (job.channel) meta.push('#' + job.channel);
+        if (job.provider) meta.push(job.provider);
+        if (job.next_run || job.due_at) meta.push(new Date(job.next_run || job.due_at).toLocaleString());
+        jobList.appendChild(buildActivityItem(
+          job.label || job.slug || 'Scheduled job',
+          job.workflow_key || job.skill_name || job.kind || '',
+          meta,
+          {
+            kindLabel: job.status || 'scheduled',
+            kindClass: schedulerJobDueVisualClass(job)
+          }
+        ));
+      });
+      schedulerSection.appendChild(jobList);
+    }
+    right.appendChild(schedulerSection);
+
+    grid.appendChild(left);
+    grid.appendChild(right);
+    shell.appendChild(grid);
+    panel.appendChild(shell);
+  }).catch(function() {
+    panel.textContent = '';
+    panel.appendChild(el('div', { className: 'request-empty' }, 'Could not load office activity.'));
+  });
+}
+
+function schedulerJobDueVisualClass(job) {
+  var status = String(job.status || '').toLowerCase();
+  if (status === 'failed' || status === 'error') return 'danger';
+  if (status === 'active' || status === 'running' || status === 'due') return 'good';
+  return '';
 }
 
 // --- Workspace summary (#30) and hint (#31) ---
@@ -3911,6 +6610,52 @@ function renderRuntimeStrip() {
   }
 }
 
+function liveWorkStatusRank(task) {
+  var status = normalizeTaskStatus(task.status);
+  if (status === 'in_progress') return 0;
+  if (status === 'review') return 1;
+  if (status === 'blocked') return 2;
+  if (status === 'open') return 3;
+  return 4;
+}
+
+function renderLiveTaskLaneCard(task) {
+  var card = document.createElement('div');
+  card.className = 'live-work-lane';
+  card.addEventListener('click', function() { openTaskDetail(task); });
+
+  var header = document.createElement('div');
+  header.className = 'live-work-lane-header';
+  var status = normalizeTaskStatus(task.status);
+  header.appendChild(el('span', { className: 'live-work-lane-status ' + status }, status.replace(/_/g, ' ')));
+  if (task.channel) header.appendChild(el('span', { className: 'live-work-card-channel' }, '#' + task.channel));
+  if (task.execution_mode) header.appendChild(el('span', { className: 'live-work-card-meta' }, task.execution_mode.replace(/_/g, ' ')));
+  card.appendChild(header);
+
+  var owner = document.createElement('div');
+  owner.className = 'live-work-lane-owner';
+  owner.textContent = task.owner || task.assignee || 'unassigned';
+  card.appendChild(owner);
+
+  var title = document.createElement('div');
+  title.className = 'live-work-lane-title';
+  title.textContent = task.title || task.name || task.id || 'Untitled task';
+  card.appendChild(title);
+
+  if (task.details || task.description) {
+    card.appendChild(el('div', { className: 'activity-item-body' }, String(task.details || task.description).slice(0, 180)));
+  }
+
+  var meta = document.createElement('div');
+  meta.className = 'live-work-lane-submeta';
+  if (task.worktree_branch) meta.appendChild(el('span', null, '\u2387 ' + task.worktree_branch));
+  else if (task.worktree_path) meta.appendChild(el('span', null, '\u2387 ' + task.worktree_path.split('/').pop()));
+  if (task.review_state) meta.appendChild(el('span', null, 'review ' + task.review_state));
+  if (task.thread_id) meta.appendChild(el('span', null, 'thread ' + task.thread_id));
+  card.appendChild(meta);
+  return card;
+}
+
 // --- Live work cards (#77) ---
 function renderLiveWork() {
   var section = document.getElementById('live-work-section');
@@ -3928,9 +6673,17 @@ function renderLiveWork() {
 
   // Blocked tasks (#80)
   var blockedTasks = cachedTasks.filter(function(t) { return t.status === 'blocked'; });
+  var activeTasks = cachedTasks.filter(function(t) {
+    var status = normalizeTaskStatus(t.status);
+    return status === 'in_progress' || status === 'review' || status === 'open';
+  }).sort(function(a, b) {
+    var rank = liveWorkStatusRank(a) - liveWorkStatusRank(b);
+    if (rank !== 0) return rank;
+    return String(a.title || a.id || '').localeCompare(String(b.title || b.id || ''));
+  });
 
   // Wait state (#79) — show calm message when nothing is moving
-  if (liveAgents.length === 0 && blockedTasks.length === 0) {
+  if (liveAgents.length === 0 && blockedTasks.length === 0 && activeTasks.length === 0) {
     var waitState = document.createElement('div');
     waitState.className = 'wait-state';
     var waitIcon = document.createElement('div');
@@ -3945,10 +6698,24 @@ function renderLiveWork() {
     return;
   }
 
+  if (activeTasks.length > 0) {
+    var laneTitle = document.createElement('div');
+    laneTitle.className = 'live-work-title';
+    laneTitle.textContent = 'Active lanes across the office';
+    section.appendChild(laneTitle);
+
+    var laneGrid = document.createElement('div');
+    laneGrid.className = 'live-work-grid';
+    activeTasks.slice(0, 6).forEach(function(task) {
+      laneGrid.appendChild(renderLiveTaskLaneCard(task));
+    });
+    section.appendChild(laneGrid);
+  }
+
   if (liveAgents.length > 0) {
     var title = document.createElement('div');
     title.className = 'live-work-title';
-    title.textContent = 'Live work now';
+    title.textContent = 'Who is doing it right now';
     section.appendChild(title);
 
     var cards = document.createElement('div');
@@ -3964,10 +6731,13 @@ function renderLiveWork() {
       agentName.textContent = agent ? agent.name : a.name || a.slug;
       var taskText = document.createElement('span');
       taskText.className = 'live-work-card-task';
-      taskText.textContent = a.task ? a.task.title || a.task.name || a.activity : a.activity;
+      taskText.textContent = a.task ? (a.task.title || a.task.name || a.activity) : (agentLatestText[a.slug] || a.activity);
       card.appendChild(dot);
       card.appendChild(agentName);
       card.appendChild(taskText);
+      if (a.task && a.task.channel) {
+        card.appendChild(el('span', { className: 'live-work-card-channel' }, '#' + a.task.channel));
+      }
       // Session token count for this agent
       if (cachedUsage && cachedUsage.agents && cachedUsage.agents[a.slug]) {
         var au = cachedUsage.agents[a.slug];
@@ -5160,7 +7930,7 @@ function startMemberActivityPolling() {
 function fetchMemberActivity() {
   Promise.all([
     WuphfAPI.getMembers(currentChannel).catch(function() { return { members: [] }; }),
-    WuphfAPI.getTasks(currentChannel).catch(function() { return { tasks: [] }; }),
+    WuphfAPI.getOfficeTasks().catch(function() { return { tasks: [] }; }),
     WuphfAPI.getUsage().catch(function() { return null; })
   ]).then(function(results) {
     cachedMembers = normalizeMemberActivityHints(results[0].members || []);
@@ -5783,6 +8553,17 @@ function handleSlashCommand(input) {
             lastMessageId = '';
             allMessages = {};
             threadReplyCounts = {};
+            channelMetadata = {};
+            cachedMembers = [];
+            cachedTasks = [];
+            cachedRequests = [];
+            AGENTS = cloneAgents(DEFAULT_AGENTS);
+            CHANNELS = cloneChannels(DEFAULT_CHANNELS);
+            currentApp = null;
+            switchChannel('general');
+            refreshOfficeSidebar();
+            fetchMemberActivity();
+            fetchRequests();
             showSystem('Office reset');
           });
         }
@@ -6837,8 +9618,14 @@ function initWizard() {
           updateChecklistSidebar(state.checklist);
         }
       } else {
-        var startStep = (state && state.step) ? state.step : 'welcome';
+        var partial = state && state.partial ? state.partial : null;
+        var startStep = (state && state.step) ? state.step : ((partial && partial.step) ? partial.step : 'welcome');
+        var welcome = partial && partial.answers ? (partial.answers.welcome || partial.answers.setup || {}) : {};
+        setFirstExistingFieldValue(['wiz-company'], welcome.company_name || welcome.company || '');
+        setFirstExistingFieldValue(['wiz-description'], welcome.description || '');
+        setFirstExistingFieldValue(['wiz-priority'], welcome.priority || '');
         document.getElementById('onboarding-wizard').style.display = '';
+        renderStarterTemplates();
         renderWizardProgress(startStep);
         showWizardStep(startStep);
       }
@@ -6847,6 +9634,7 @@ function initWizard() {
       var errMsg = err && err.message ? err.message : String(err);
       console.error('[wizard] initWizard error: ' + errMsg);
       document.getElementById('onboarding-wizard').style.display = '';
+      renderStarterTemplates();
       renderWizardProgress('welcome');
       showWizardStep('welcome');
     });
@@ -6887,18 +9675,48 @@ function submitWelcome() {
   }
   var btn = document.getElementById('wiz-btn-welcome');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving\u2026'; }
-  fetch('/api/onboarding/progress', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ company: company, description: description, priority: priority, step: 'setup' })
-  })
-    .catch(function() {})
+  Promise.all([
+    fetch('/api/onboarding/progress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        step: 'welcome',
+        answers: {
+          company_name: company,
+          description: description,
+          priority: priority
+        }
+      })
+    }).then(function(r) {
+      if (!r.ok) throw new Error('failed to save onboarding progress');
+      return r.json().catch(function() { return {}; });
+    }),
+    fetch('/api/company', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: company,
+        description: description,
+        priority: priority
+      })
+    }).then(function(r) {
+      if (!r.ok) throw new Error('failed to persist company profile');
+      return r.json().catch(function() { return {}; });
+    })
+  ])
     .then(function() {
       showWizardStep('setup');
       if (btn) {
         btn.disabled = false;
         btn.textContent = 'Assemble the team \u2192';
       }
+    })
+    .catch(function(err) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Assemble the team \u2192';
+      }
+      showNotice(err && err.message ? err.message : 'Could not save onboarding setup.', 'error');
     });
 }
 
@@ -7247,6 +10065,10 @@ function completeOnboarding(skipTask) {
     var ta = document.getElementById('wiz-task-input');
     task = ta ? (ta.value || '') : '';
   }
+  if (!skipTask && !task.trim()) {
+    showNotice('Pick a starter task or describe one yourself before opening the office.', 'error');
+    return;
+  }
   // Safety net: persist the selected runtime in case the user landed on the
   // auto-selected default without clicking a tile.
   if (wizSelectedRuntime) persistRuntimeChoice(wizSelectedRuntime);
@@ -7255,12 +10077,19 @@ function completeOnboarding(skipTask) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task: task, skip_task: !!skipTask })
   })
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (!r.ok) {
+        return r.text().then(function(text) {
+          throw new Error(text || ('onboarding complete failed (' + r.status + ')'));
+        });
+      }
+      return r.json().catch(function() { return {}; });
+    })
     .then(function(data) {
       _finishOnboarding(data);
     })
-    .catch(function() {
-      _finishOnboarding({});
+    .catch(function(err) {
+      showNotice(err && err.message ? err.message : 'Could not complete onboarding.', 'error');
     });
 }
 
@@ -7693,6 +10522,7 @@ function enterDMMode(agentSlug) {
 
   // Update composer placeholder
   document.getElementById('composer-input').placeholder = 'Message ' + agent.name + ' directly...';
+  document.getElementById('composer-input').setAttribute('aria-label', 'Direct message ' + agent.name);
 
   // Show DM thread, hide regular messages
   document.getElementById('messages').style.display = 'none';
@@ -7776,6 +10606,7 @@ function onDMChannelEnter(slug) {
     document.getElementById('channel-title').textContent = agent.name;
     document.getElementById('channel-desc').textContent = 'direct message';
     document.getElementById('composer-input').placeholder = 'Message ' + agent.name + '\u2026';
+    document.getElementById('composer-input').setAttribute('aria-label', 'Direct message ' + agent.name);
     document.getElementById('dm-stream-title').textContent = agent.name + ' \u2014 live output';
   }
   // Activate split layout: messages left, stream right
@@ -8159,6 +10990,10 @@ function renderStreamLine(container, rawText) {
       container.appendChild(toolCard);
       return;
     }
+
+    // Unknown completed items are usually bookkeeping noise (for example
+    // plan/update events) and render as unhelpful "item.completed" cards.
+    return;
   }
 
   // ── Fallback for any other structured event ──
@@ -8294,7 +11129,7 @@ function renderRecoveryData(panel, state, tasksData, membersData) {
   var stats = [
     ['Current Channel', currentChannel],
     ['Session Mode', dmModeActive ? '1:1 with ' + (dmAgent ? dmAgent.name : '?') : 'Office'],
-    ['Connected', brokerConnected ? 'Yes' : 'No (demo mode)'],
+    ['Connected', brokerConnected ? 'Yes' : 'No (broker disconnected)'],
     ['Messages Loaded', Object.keys(allMessages).length.toString()],
     ['Active Threads', Object.keys(threadReplyCounts).length.toString()],
   ];
@@ -8623,12 +11458,15 @@ function normalizeTaskStatus(status) {
 
 function renderTaskBoard(container, tasks) {
   var columns = { open: [], in_progress: [], review: [], done: [] };
+  var channelMap = {};
   tasks.forEach(function(t) {
     var status = normalizeTaskStatus(t.status);
+    if (t.channel) channelMap[t.channel] = true;
     if (status === 'blocked') { columns.open.push(t); return; }
     if (columns[status]) columns[status].push(t);
     else columns.open.push(t);
   });
+  var showChannel = Object.keys(channelMap).length > 1;
 
   var board = el('div', { className: 'task-board' });
 
@@ -8671,11 +11509,17 @@ function renderTaskBoard(container, tasks) {
 
       var title = el('div', { className: 'task-card-title' }, task.title || task.name || 'Untitled');
       card.appendChild(title);
+      if (showChannel && task.channel) {
+        card.appendChild(el('div', { className: 'task-card-worktree', style: { marginBottom: '6px' } }, '#' + task.channel));
+      }
 
       // Worktree info (#53)
       if (task.worktree_branch || task.worktree_path) {
         var branchText = task.worktree_branch || task.worktree_path.split('/').pop();
         card.appendChild(el('div', { className: 'task-card-worktree' }, '\u2387 ' + branchText));
+      }
+      if (task.details || task.description) {
+        card.appendChild(el('div', { style: { fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px', lineHeight: '1.45' } }, String(task.details || task.description).slice(0, 160)));
       }
 
       var meta = el('div', { className: 'task-card-meta' });
@@ -8732,8 +11576,8 @@ function openTaskDetail(task) {
     card.appendChild(row);
   });
 
-  if (task.description) {
-    var desc = el('div', { className: 'task-detail-desc' }, task.description);
+  if (task.details || task.description) {
+    var desc = el('div', { className: 'task-detail-desc' }, task.details || task.description);
     card.appendChild(desc);
   }
 
