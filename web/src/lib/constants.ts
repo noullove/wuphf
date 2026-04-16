@@ -8,6 +8,7 @@ export const SIDEBAR_APPS = [
   { id: 'activity', icon: '\uD83D\uDCE6', name: 'Activity' },
   { id: 'receipts', icon: '\uD83E\uDDFE', name: 'Receipts' },
   { id: 'health-check', icon: '\uD83D\uDD0D', name: 'Health Check' },
+  { id: 'settings', icon: '\u2699', name: 'Settings' },
 ] as const
 
 export const ONBOARDING_COPY = {

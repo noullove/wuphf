@@ -402,3 +402,90 @@ export function generateStudioPackage(payload?: unknown) {
 export function runStudioWorkflow(payload?: unknown) {
   return post('/studio/run-workflow', payload ?? {})
 }
+
+// ── Config (Settings) ──
+
+export type LLMProvider = 'claude-code' | 'codex'
+export type MemoryBackend = 'nex' | 'gbrain' | 'none'
+export type ActionProvider = 'auto' | 'composio' | ''
+
+export interface ConfigSnapshot {
+  // Runtime
+  llm_provider?: LLMProvider
+  memory_backend?: MemoryBackend
+  action_provider?: ActionProvider
+  team_lead_slug?: string
+  max_concurrent_agents?: number
+  default_format?: string
+  default_timeout?: number
+  blueprint?: string
+  // Workspace
+  email?: string
+  workspace_id?: string
+  workspace_slug?: string
+  dev_url?: string
+  // Company
+  company_name?: string
+  company_description?: string
+  company_goals?: string
+  company_size?: string
+  company_priority?: string
+  // Polling
+  insights_poll_minutes?: number
+  task_follow_up_minutes?: number
+  task_reminder_minutes?: number
+  task_recheck_minutes?: number
+  // Secret flags
+  api_key_set?: boolean
+  openai_key_set?: boolean
+  anthropic_key_set?: boolean
+  gemini_key_set?: boolean
+  minimax_key_set?: boolean
+  one_key_set?: boolean
+  composio_key_set?: boolean
+  telegram_token_set?: boolean
+  openclaw_token_set?: boolean
+  openclaw_gateway_url?: string
+  config_path?: string
+}
+
+export type ConfigUpdate = Partial<{
+  llm_provider: LLMProvider
+  memory_backend: MemoryBackend
+  action_provider: ActionProvider
+  team_lead_slug: string
+  max_concurrent_agents: number
+  default_format: string
+  default_timeout: number
+  blueprint: string
+  email: string
+  dev_url: string
+  company_name: string
+  company_description: string
+  company_goals: string
+  company_size: string
+  company_priority: string
+  insights_poll_minutes: number
+  task_follow_up_minutes: number
+  task_reminder_minutes: number
+  task_recheck_minutes: number
+  // Secret-write fields — sent as plaintext on write, never returned on read
+  api_key: string
+  openai_api_key: string
+  anthropic_api_key: string
+  gemini_api_key: string
+  minimax_api_key: string
+  one_api_key: string
+  composio_api_key: string
+  telegram_bot_token: string
+  openclaw_token: string
+  openclaw_gateway_url: string
+}>
+
+export function getConfig() {
+  return get<ConfigSnapshot>('/config')
+}
+
+export function updateConfig(patch: ConfigUpdate) {
+  return post<{ status: string }>('/config', patch)
+}
