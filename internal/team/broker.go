@@ -461,6 +461,7 @@ type Broker struct {
 	rateLimitWindow     time.Duration
 	rateLimitRequests   int
 	lastRateLimitPrune  time.Time
+	agentLogRoot        string // override for tests; empty means agent.DefaultTaskLogRoot()
 }
 
 func taskNeedsLocalWorktree(task *teamTask) bool {
@@ -1058,6 +1059,7 @@ func (b *Broker) StartOnPort(port int) error {
 	mux.HandleFunc("/members", b.requireAuth(b.handleMembers))
 	mux.HandleFunc("/tasks", b.requireAuth(b.handleTasks))
 	mux.HandleFunc("/tasks/ack", b.requireAuth(b.handleTaskAck))
+	mux.HandleFunc("/agent-logs", b.requireAuth(b.handleAgentLogs))
 	mux.HandleFunc("/task-plan", b.requireAuth(b.handleTaskPlan))
 	mux.HandleFunc("/memory", b.requireAuth(b.handleMemory))
 	mux.HandleFunc("/studio/generate-package", b.requireAuth(b.handleStudioGeneratePackage))
@@ -2595,6 +2597,14 @@ func (b *Broker) SetGenerateMemberFn(fn func(string) (generatedMemberTemplate, e
 
 func (b *Broker) SetGenerateChannelFn(fn func(string) (generatedChannelTemplate, error)) {
 	b.generateChannelFn = fn
+}
+
+// SetAgentLogRoot overrides where /agent-logs reads task JSONL from.
+// Used by tests; production uses agent.DefaultTaskLogRoot().
+func (b *Broker) SetAgentLogRoot(root string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.agentLogRoot = root
 }
 
 func (b *Broker) FocusModeEnabled() bool {
@@ -6800,6 +6810,58 @@ func (b *Broker) handleTasks(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (b *Broker) handleAgentLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	b.mu.Lock()
+	root := b.agentLogRoot
+	b.mu.Unlock()
+	if root == "" {
+		root = agent.DefaultTaskLogRoot()
+	}
+
+	task := strings.TrimSpace(r.URL.Query().Get("task"))
+	if task != "" {
+		// Guard against path traversal — the task id is a single directory name.
+		if strings.Contains(task, "..") || strings.ContainsAny(task, `/\`) {
+			http.Error(w, "invalid task id", http.StatusBadRequest)
+			return
+		}
+		entries, err := agent.ReadTaskLog(root, task)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				http.Error(w, "task not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"task":    task,
+			"entries": entries,
+		})
+		return
+	}
+
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	tasks, err := agent.ListRecentTasks(root, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"tasks": tasks})
 }
 
 func (b *Broker) handleGetTasks(w http.ResponseWriter, r *http.Request) {
