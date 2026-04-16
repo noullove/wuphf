@@ -20,9 +20,20 @@ func TestListRecentTasks_EmptyDir(t *testing.T) {
 
 func TestListRecentTasks_OrdersByMtimeDesc(t *testing.T) {
 	dir := t.TempDir()
-	mustWriteLog(t, filepath.Join(dir, "eng-100", "output.log"), `{"tool_name":"grep_search"}`+"\n")
-	time.Sleep(10 * time.Millisecond)
-	mustWriteLog(t, filepath.Join(dir, "ceo-200", "output.log"), `{"tool_name":"send_message"}`+"\n")
+	oldLog := filepath.Join(dir, "eng-100", "output.log")
+	newLog := filepath.Join(dir, "ceo-200", "output.log")
+	mustWriteLog(t, oldLog, `{"tool_name":"grep_search"}`+"\n")
+	mustWriteLog(t, newLog, `{"tool_name":"send_message"}`+"\n")
+
+	// Set mtimes explicitly so the test doesn't rely on wall-clock resolution.
+	older := time.Now().Add(-time.Hour)
+	newer := time.Now()
+	if err := os.Chtimes(oldLog, older, older); err != nil {
+		t.Fatalf("chtimes old: %v", err)
+	}
+	if err := os.Chtimes(newLog, newer, newer); err != nil {
+		t.Fatalf("chtimes new: %v", err)
+	}
 
 	got, err := ListRecentTasks(dir, 10)
 	if err != nil {
@@ -76,6 +87,25 @@ func TestReadTaskLog_SkipsCorruptLines(t *testing.T) {
 	}
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 valid entries (corrupt line skipped), got %d", len(entries))
+	}
+}
+
+func TestReadTaskLog_EmptyTaskID(t *testing.T) {
+	_, err := ReadTaskLog(t.TempDir(), "")
+	if err == nil {
+		t.Fatal("expected error for empty taskID")
+	}
+}
+
+func TestReadTaskLog_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteLog(t, filepath.Join(dir, "eng-100", "output.log"), "")
+	entries, err := ReadTaskLog(dir, "eng-100")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries from empty file, got %d", len(entries))
 	}
 }
 

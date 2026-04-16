@@ -2,8 +2,10 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -68,6 +70,9 @@ func ListRecentTasks(root string, limit int) ([]TaskLogSummary, error) {
 		if err != nil {
 			continue
 		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
 		summary := summarizeTaskLog(logPath, taskID)
 		summary.SizeBytes = info.Size()
 		results = append(results, taskWithMtime{summary: summary, mtime: info.ModTime().UnixMilli()})
@@ -98,9 +103,17 @@ func ReadTaskLog(root, taskID string) ([]TaskLogEntry, error) {
 	path := filepath.Join(root, taskID, "output.log")
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open task log %q: %w", taskID, err)
 	}
 	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat task log %q: %w", taskID, err)
+	}
+	if !stat.Mode().IsRegular() {
+		return nil, fmt.Errorf("task log %q is not a regular file", taskID)
+	}
 
 	var entries []TaskLogEntry
 	scanner := bufio.NewScanner(f)
@@ -108,7 +121,7 @@ func ReadTaskLog(root, taskID string) ([]TaskLogEntry, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if len(strings.TrimSpace(string(line))) == 0 {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var entry TaskLogEntry
@@ -118,7 +131,7 @@ func ReadTaskLog(root, taskID string) ([]TaskLogEntry, error) {
 		entries = append(entries, entry)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scan task log %q: %w", taskID, err)
 	}
 	return entries, nil
 }
